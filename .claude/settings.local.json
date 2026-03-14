@@ -10,7 +10,12 @@
       "Bash(git commit:*)",
       "Bash(gh auth:*)",
       "Bash(gh repo:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git push:*)",
+      "WebFetch(domain:xiangyu7.github.io)",
+      "Bash(gh run:*)",
+      "Bash(gh variable:*)",
+      "Bash(gh workflow:*)"
     ]
   }
 }
