@@ -6,7 +6,11 @@
       "Bash(python:*)",
       "Bash(sleep:*)",
       "Bash(curl:*)",
-      "Bash(lsof:*)"
+      "Bash(lsof:*)",
+      "Bash(git commit:*)",
+      "Bash(gh auth:*)",
+      "Bash(gh repo:*)",
+      "Bash(git add:*)"
     ]
   }
 }
