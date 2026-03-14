@@ -1,0 +1,110 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #0f172a;
+  --bg-card: #1e293b;
+  --border-card: #334155;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --accent-amber: #f59e0b;
+  --accent-violet: #8b5cf6;
+  --accent-blue: #3b82f6;
+  --accent-red: #ef4444;
+  --accent-emerald: #34d399;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1e293b;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Feed item fade-in animation */
+@keyframes feedFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.feed-item-enter {
+  animation: feedFadeIn 0.4s ease-out forwards;
+}
+
+/* Pulse animation for loading indicator */
+@keyframes pulseGlow {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.pulse-glow {
+  animation: pulseGlow 1.5s ease-in-out infinite;
+}
+
+/* Clue glow effect */
+@keyframes clueGlow {
+  0%,
+  100% {
+    box-shadow: 0 0 4px rgba(245, 158, 11, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 12px rgba(245, 158, 11, 0.4);
+  }
+}
+
+.clue-glow {
+  animation: clueGlow 2s ease-in-out 3;
+}
+
+/* Tension bar transition */
+.tension-bar {
+  transition: width 0.6s ease-in-out, background-color 0.6s ease-in-out;
+}
+
+/* Smooth transitions for interactive elements */
+.btn-transition {
+  transition: all 0.2s ease-in-out;
+}
+
+/* Input focus ring */
+input:focus,
+textarea:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.3);
+}
