@@ -169,6 +169,31 @@ _SETTING_REPLACEMENTS = {
 }
 
 
+def _compute_mood(psych_state) -> str:
+    """Map a CharacterPsychState to a mood label for the frontend.
+
+    Priority order: desperate > angry > fearful > nervous > calm > guarded.
+    """
+    if psych_state is None:
+        return "neutral"
+    desperation = getattr(psych_state, "desperation", 0.0)
+    anger = getattr(psych_state, "anger", 0.1)
+    fear = getattr(psych_state, "fear", 0.2)
+    composure = getattr(psych_state, "composure", 0.8)
+
+    if desperation > 0.6:
+        return "desperate"   # 绝望
+    if anger > 0.6:
+        return "angry"       # 愤怒
+    if fear > 0.6:
+        return "fearful"     # 恐惧
+    if composure < 0.3:
+        return "nervous"     # 紧张
+    if composure > 0.7 and anger < 0.2:
+        return "calm"        # 冷静
+    return "guarded"         # 警惕
+
+
 def _sanitize_narration(text: str) -> str:
     """Fix LLM hallucinations that break the game setting."""
     if not text:
@@ -842,9 +867,21 @@ class TurnEngine:
 
         # ── 3b. Secret conversations — NPCs scheme behind player's back ──
         npc_locs = {c.id: c.location for c in state.characters}
+        discovered_clue_texts = [c.text for c in state.clues if c.discovered]
         secret_conv = self.secret_conversations.simulate(
             session_id, state.scene, npc_locs, state.tension, state.round + 1,
+            config=self.config,
+            character_states=psych_states_for_npc,
+            discovered_clue_texts=discovered_clue_texts,
         )
+        # If pre-written scripts are exhausted, try LLM-powered dynamic generation
+        if secret_conv is None and self.config.provider != LLMProvider.FALLBACK:
+            secret_conv = await self.secret_conversations.simulate_dynamic(
+                session_id, state.scene, npc_locs, state.tension, state.round + 1,
+                config=self.config,
+                character_states=psych_states_for_npc,
+                discovered_clue_texts=discovered_clue_texts,
+            )
         if secret_conv:
             # Apply psychological effects (player doesn't see these directly)
             for char_id, effects in secret_conv.psych_effects.items():
@@ -1470,6 +1507,11 @@ class TurnEngine:
             stuck_turns=self._stuck_turns.get(session_id, 0),
         )
 
+        # ── 10b. Map psychology → mood label ──
+        for char in state.characters:
+            ps = self.psychology.get_state(session_id, char.id)
+            char.mood = _compute_mood(ps)
+
         # ── 11. Return (DM-controlled narration) ──
         director_note = dm_directive.director_note
         if dm_directive.hint_text:
@@ -1585,15 +1627,35 @@ class TurnEngine:
 
         # Secret conversations
         npc_locs = {c.id: c.location for c in state.characters}
+        discovered_clue_texts = [c.text for c in state.clues if c.discovered]
         secret_conv = self.secret_conversations.simulate(
             session_id, state.scene, npc_locs, state.tension, state.round + 1,
+            config=self.config,
+            character_states=psych_states_for_npc,
+            discovered_clue_texts=discovered_clue_texts,
         )
+        # If pre-written scripts are exhausted, try LLM-powered dynamic generation
+        if secret_conv is None and self.config.provider != LLMProvider.FALLBACK:
+            secret_conv = await self.secret_conversations.simulate_dynamic(
+                session_id, state.scene, npc_locs, state.tension, state.round + 1,
+                config=self.config,
+                character_states=psych_states_for_npc,
+                discovered_clue_texts=discovered_clue_texts,
+            )
         if secret_conv:
             for char_id, effects in secret_conv.psych_effects.items():
                 ps = self.psychology.get_state(session_id, char_id)
                 for attr, delta in effects.items():
                     current = getattr(ps, attr, 0.0)
                     setattr(ps, attr, max(0.0, min(1.0, current + delta)))
+
+        # ── Ambient hints: sounds from adjacent rooms ──
+        for npc_act in visible_npc_actions:
+            if not npc_act.visible_to_player and npc_act.sound_generated:
+                yield {
+                    "type": "ambient_hint",
+                    "text": f"你隐约听到{npc_act.location}方向传来{npc_act.sound_generated}……",
+                }
 
         # ── Generate fallback narration and yield immediately ──
         fallback_result = self.action_engine.simulate_fallback(player_action)
@@ -2220,6 +2282,11 @@ class TurnEngine:
                 inject_twist=dm_directive.inject_twist,
                 stuck_turns=self._stuck_turns.get(session_id, 0),
             )
+
+            # Map psychology → mood label
+            for char in state.characters:
+                ps = self.psychology.get_state(session_id, char.id)
+                char.mood = _compute_mood(ps)
 
             # Final state event
             state_data = {

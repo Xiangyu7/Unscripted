@@ -19,6 +19,7 @@ import CluePanel from "@/components/CluePanel";
 import WorldLedger from "@/components/WorldLedger";
 import QuickActions from "@/components/QuickActions";
 import DetectiveNotebook from "@/components/DetectiveNotebook";
+import LocationMap from "@/components/LocationMap";
 import {
   FeedItem,
   GameState,
@@ -539,6 +540,11 @@ export default function HomePage() {
                   }
                 }
                 break;
+              case "ambient_hint":
+                if (event.text) {
+                  addFeedItems([{ id: nextFeedId(), type: "event", text: event.text }]);
+                }
+                break;
               case "event":
                 if (event.text) {
                   addFeedItems([{ id: nextFeedId(), type: "event", text: event.text }]);
@@ -892,6 +898,10 @@ export default function HomePage() {
         </div>
 
         <div className="hidden lg:flex w-80 shrink-0 flex-col gap-3 overflow-y-auto">
+          <LocationMap
+            characters={gameState?.characters || []}
+            playerScene={gameState?.scene || "宴会厅"}
+          />
           <DetectiveNotebook
             characters={gameState?.characters || []}
             clues={gameState?.clues || []}

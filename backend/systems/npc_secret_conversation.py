@@ -10,12 +10,22 @@ but sees the CONSEQUENCES:
   - Inconsistencies to catch
 
 This creates the feeling that NPCs have their own lives and agendas.
+
+For the first ~20 rounds, pre-written conversations are used (zero LLM tokens).
+Once pre-written scripts are exhausted, an LLM generates dynamic conversations
+so NPC interactions never run out.
 """
 
+from __future__ import annotations
+
+import json
 import random
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from config import Config
 
 
 class SecretConversation(BaseModel):
@@ -144,6 +154,35 @@ SECRET_CONVERSATIONS: List[dict] = [
 ]
 
 
+DYNAMIC_CONV_SYSTEM_PROMPT = """\
+你是一个推理游戏的NPC互动模拟器。两个角色在玩家不知情的情况下进行了一段简短对话。
+
+游戏背景：顾家老宅，主人顾言在晚宴中失踪。三位嫌疑人各有秘密。
+真相：顾言自导自演失踪，试探身边人。
+
+角色设定：
+- 林岚（秘书）：知道顾言的计划，冷静但紧张
+- 周牧（发小）：昨晚与顾言争吵过，在隐瞒什么
+- 宋知微（记者）：收到过匿名线报，在暗中调查
+
+你必须返回JSON：
+{
+  "dialogue_summary": "一句话总结对话内容",
+  "evidence": "对话后留下的物理痕迹（50字以内）",
+  "evidence_location": "痕迹所在地点",
+  "psych_effects": {"角色ID": {"composure": 变化值, "fear": 变化值}},
+  "behavioral_tells": {"角色ID": "行为变化描述"}
+}
+"""
+
+# Character ID → display name mapping for prompt construction
+_CHAR_NAMES: Dict[str, str] = {
+    "linlan": "林岚",
+    "zhoumu": "周牧",
+    "songzhi": "宋知微",
+}
+
+
 class SecretConversationSystem:
     """Manages NPC private interactions that happen off-screen."""
 
@@ -151,6 +190,35 @@ class SecretConversationSystem:
         self._triggered: Dict[str, set] = {}  # session → triggered conversation IDs
         self._pending_evidence: Dict[str, List[dict]] = {}  # session → evidence waiting to be discovered
         self._pending_tells: Dict[str, Dict[str, str]] = {}  # session → {char_id: tell text}
+        self._llm_client = None  # lazily initialised on first dynamic call
+        self._llm_config: Optional[Config] = None
+
+    # ------------------------------------------------------------------
+    # LLM client (lazy init, same pattern as DMAgent)
+    # ------------------------------------------------------------------
+
+    def _ensure_llm_client(self, config: Config):
+        """Initialise the LLM client once, re-use on subsequent calls."""
+        if self._llm_client is not None:
+            return
+
+        from config import LLMProvider
+
+        if config.provider == LLMProvider.OPENAI_COMPATIBLE:
+            from openai import AsyncOpenAI
+            self._llm_client = AsyncOpenAI(
+                api_key=config.api_key,
+                base_url=config.base_url,
+            )
+        elif config.provider == LLMProvider.ANTHROPIC:
+            import anthropic
+            self._llm_client = anthropic.AsyncAnthropic(api_key=config.anthropic_key)
+
+        self._llm_config = config
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def simulate(
         self,
@@ -159,11 +227,25 @@ class SecretConversationSystem:
         npc_locations: Dict[str, str],
         tension: int,
         round_num: int,
+        *,
+        config: Optional[Config] = None,
+        character_states: Optional[Dict[str, dict]] = None,
+        discovered_clue_texts: Optional[List[str]] = None,
     ) -> Optional[SecretConversation]:
         """
         Check if any secret conversation should happen this turn.
         Only triggers if the player is NOT at the conversation location.
         Returns the conversation (for internal effects) or None.
+
+        For the first ~20 rounds the pre-written scripts are used.  When all
+        pre-written scripts have been triggered (or none match the current
+        conditions) and an LLM provider is available, this returns a coroutine
+        placeholder — callers must ``await simulate_dynamic(...)`` separately.
+
+        .. note::
+            This method remains synchronous for backward-compatibility.
+            If a dynamic conversation is needed, it returns ``None`` here and
+            the caller should follow up with :meth:`simulate_dynamic`.
         """
         if session_id not in self._triggered:
             self._triggered[session_id] = set()
@@ -226,7 +308,178 @@ class SecretConversationSystem:
                 behavioral_tells=conv_def.get("behavioral_tells", {}),
             )
 
+        # No pre-written conversation matched.  Fall through to None so the
+        # caller may optionally invoke simulate_dynamic() if an LLM is available.
         return None
+
+    # ------------------------------------------------------------------
+    # LLM-powered dynamic conversation
+    # ------------------------------------------------------------------
+
+    async def simulate_dynamic(
+        self,
+        session_id: str,
+        player_location: str,
+        npc_locations: Dict[str, str],
+        tension: int,
+        round_num: int,
+        config: "Config",
+        character_states: Dict[str, dict],
+        discovered_clue_texts: List[str],
+    ) -> Optional[SecretConversation]:
+        """Generate an NPC secret conversation via a single LLM call.
+
+        Called when pre-written scripts are exhausted or none match.
+
+        Args:
+            session_id: Current game session identifier.
+            player_location: Where the player currently is.
+            npc_locations: ``{character_id: location}`` for every NPC.
+            tension: Current tension value (0-100).
+            round_num: Current round number.
+            config: Application :class:`Config` (carries LLM provider info).
+            character_states: ``{character_id: {composure, fear, ...}}`` psych states.
+            discovered_clue_texts: List of clue text strings discovered so far.
+
+        Returns:
+            A :class:`SecretConversation` or ``None`` if the LLM call fails
+            or no eligible NPC pair is found.
+        """
+        from config import LLMProvider
+
+        if config.provider == LLMProvider.FALLBACK:
+            return None
+
+        # --- Pick two NPCs that are NOT at the player's location ----------
+        eligible = [
+            cid for cid, loc in npc_locations.items()
+            if loc != player_location
+        ]
+        if len(eligible) < 2:
+            # Need at least two characters to have a conversation
+            if len(eligible) == 1:
+                participants = eligible  # solo action (like existing pre-written ones)
+            else:
+                return None
+        else:
+            participants = random.sample(eligible, 2)
+
+        # Pick a plausible location (any location that is NOT the player's)
+        all_locations = set(npc_locations.values()) - {player_location}
+        location = random.choice(list(all_locations)) if all_locations else "走廊"
+
+        # --- Build user prompt -------------------------------------------
+        char_names = [_CHAR_NAMES.get(cid, cid) for cid in participants]
+        psych_lines = []
+        for cid in participants:
+            state = character_states.get(cid, {})
+            if state:
+                parts = [f"{k}={v}" for k, v in state.items()]
+                psych_lines.append(f"  {_CHAR_NAMES.get(cid, cid)}: {', '.join(parts)}")
+            else:
+                psych_lines.append(f"  {_CHAR_NAMES.get(cid, cid)}: 无详细状态")
+
+        clue_text = "、".join(discovered_clue_texts[:10]) if discovered_clue_texts else "暂无"
+
+        user_prompt = (
+            f"当前回合：{round_num}，紧张度：{tension}/100\n"
+            f"地点：{location}（玩家不在此处）\n"
+            f"对话角色：{'、'.join(char_names)}\n"
+            f"\n角色心理状态：\n" + "\n".join(psych_lines) + "\n"
+            f"\n玩家已发现的线索：{clue_text}\n"
+            f"\n请生成这两个角色此刻的一段秘密互动。"
+        )
+
+        # --- LLM call ----------------------------------------------------
+        try:
+            self._ensure_llm_client(config)
+            raw = await self._call_llm(user_prompt, config)
+        except Exception as exc:
+            print(f"[SecretConversation] LLM call failed: {exc}")
+            return None
+
+        # --- Parse response ----------------------------------------------
+        try:
+            parsed = self._parse_llm_response(raw)
+        except Exception as exc:
+            print(f"[SecretConversation] Failed to parse LLM response: {exc}")
+            return None
+
+        # --- Build SecretConversation from parsed JSON --------------------
+        evidence = parsed.get("evidence", "")
+        evidence_location = parsed.get("evidence_location", location)
+        psych_effects = parsed.get("psych_effects", {})
+        behavioral_tells = parsed.get("behavioral_tells", {})
+        summary = parsed.get("dialogue_summary", "NPC之间发生了一段对话")
+
+        # Store evidence for later discovery
+        if evidence:
+            if session_id not in self._pending_evidence:
+                self._pending_evidence[session_id] = []
+            self._pending_evidence[session_id].append({
+                "text": evidence,
+                "location": evidence_location,
+            })
+
+        # Store behavioral tells
+        if behavioral_tells:
+            if session_id not in self._pending_tells:
+                self._pending_tells[session_id] = {}
+            for char_id, tell in behavioral_tells.items():
+                self._pending_tells[session_id][char_id] = tell
+
+        return SecretConversation(
+            participants=participants,
+            location=location,
+            topic=summary[:20],
+            summary=summary,
+            evidence=evidence,
+            evidence_location=evidence_location,
+            psych_effects=psych_effects,
+            behavioral_tells=behavioral_tells,
+        )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _call_llm(self, user_prompt: str, config: "Config") -> str:
+        """Make a single LLM call and return the raw text response."""
+        from config import LLMProvider
+
+        if config.provider == LLMProvider.OPENAI_COMPATIBLE:
+            response = await self._llm_client.chat.completions.create(
+                model=config.model,
+                messages=[
+                    {"role": "system", "content": DYNAMIC_CONV_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.8,
+                max_tokens=600,
+            )
+            return response.choices[0].message.content
+
+        elif config.provider == LLMProvider.ANTHROPIC:
+            response = await self._llm_client.messages.create(
+                model=config.model,
+                max_tokens=600,
+                system=DYNAMIC_CONV_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_prompt}],
+                temperature=0.8,
+            )
+            return response.content[0].text
+
+        else:
+            raise ValueError(f"Unsupported provider for dynamic conversation: {config.provider}")
+
+    @staticmethod
+    def _parse_llm_response(raw: str) -> dict:
+        """Parse the LLM JSON response, stripping markdown fences if present."""
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            raw = raw.rsplit("```", 1)[0]
+        return json.loads(raw)
 
     def get_evidence_at_location(
         self, session_id: str, location: str

@@ -41,6 +41,7 @@ class Character(BaseModel):
     speaking_rules: str
     hard_boundaries: List[str]
     location: str = "宴会厅"
+    mood: str = "neutral"
 
 
 class Clue(BaseModel):

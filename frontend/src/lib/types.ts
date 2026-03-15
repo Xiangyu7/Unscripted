@@ -7,6 +7,7 @@ export interface Character {
   suspicion: number;
   trust_to_player: number;
   location: string;
+  mood?: string;
   knowledge?: string[];
   portrait_url?: string;
 }
