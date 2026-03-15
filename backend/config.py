@@ -30,6 +30,27 @@ class Config:
             self.provider = LLMProvider.FALLBACK
             self.model = None
 
+        self.modelscope_api_key = os.getenv("MODELSCOPE_API_KEY")
+
+        # Speech stack: keep text, ASR, and TTS independently configurable so
+        # one provider outage or quota issue does not take down the full turn.
+        self.asr_provider = os.getenv(
+            "ASR_PROVIDER",
+            "glm" if (os.getenv("ASR_API_KEY") or self.api_key) else "disabled",
+        )
+        self.asr_api_key = os.getenv("ASR_API_KEY") or self.api_key
+        self.asr_base_url = os.getenv("ASR_BASE_URL") or self.base_url
+        self.asr_model = os.getenv("ASR_MODEL", "glm-asr-2512")
+
+        self.tts_provider = os.getenv("TTS_PROVIDER", "disabled")
+        self.tts_api_key = os.getenv("TTS_API_KEY") or self.api_key
+        self.tts_base_url = os.getenv("TTS_BASE_URL") or self.base_url
+        self.tts_model = os.getenv("TTS_MODEL", "glm-tts")
+        self.tts_default_voice = os.getenv("TTS_DEFAULT_VOICE", "tongtong")
+        self.tts_response_format = os.getenv("TTS_RESPONSE_FORMAT", "wav")
+
+        self.voice_timeout_seconds = float(os.getenv("VOICE_TIMEOUT_SECONDS", "30"))
+
         self.host = os.getenv("HOST", "0.0.0.0")
         self.port = int(os.getenv("PORT", "8000"))
 

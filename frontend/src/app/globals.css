@@ -92,6 +92,20 @@ body {
   animation: clueGlow 2s ease-in-out 3;
 }
 
+@keyframes recordingRing {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(244, 63, 94, 0);
+  }
+}
+
+.recording-ring {
+  animation: recordingRing 1.4s ease-out infinite;
+}
+
 /* Tension bar transition */
 .tension-bar {
   transition: width 0.6s ease-in-out, background-color 0.6s ease-in-out;
@@ -107,4 +121,62 @@ input:focus,
 textarea:focus {
   outline: none;
   box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.3);
+}
+
+/* Typewriter effect for NPC dialogue */
+@keyframes typewriter {
+  from { max-height: 0; opacity: 0; }
+  to { max-height: 500px; opacity: 1; }
+}
+
+.typewriter-enter {
+  overflow: hidden;
+  animation: typewriter 0.8s ease-out forwards;
+}
+
+/* Caught lie dramatic flash */
+@keyframes lieFlash {
+  0% { background-color: rgba(239, 68, 68, 0.3); }
+  25% { background-color: rgba(239, 68, 68, 0.1); }
+  50% { background-color: rgba(239, 68, 68, 0.25); }
+  100% { background-color: rgba(239, 68, 68, 0.05); }
+}
+
+.lie-caught {
+  animation: lieFlash 1.5s ease-out;
+  border-left: 3px solid #ef4444 !important;
+}
+
+/* Screen shake for dramatic moments */
+@keyframes screenShake {
+  0%, 100% { transform: translateX(0); }
+  10% { transform: translateX(-3px); }
+  30% { transform: translateX(3px); }
+  50% { transform: translateX(-2px); }
+  70% { transform: translateX(2px); }
+  90% { transform: translateX(-1px); }
+}
+
+.screen-shake {
+  animation: screenShake 0.5s ease-out;
+}
+
+/* Tension-based color shift on body */
+.tension-low { --tension-glow: rgba(52, 211, 153, 0.03); }
+.tension-mid { --tension-glow: rgba(245, 158, 11, 0.05); }
+.tension-high { --tension-glow: rgba(239, 68, 68, 0.07); }
+
+.tension-bg {
+  background-image: radial-gradient(ellipse at bottom, var(--tension-glow, transparent), transparent 70%);
+}
+
+/* Score rank animation */
+@keyframes scoreReveal {
+  0% { transform: scale(0.5); opacity: 0; }
+  60% { transform: scale(1.1); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.score-reveal {
+  animation: scoreReveal 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
 }

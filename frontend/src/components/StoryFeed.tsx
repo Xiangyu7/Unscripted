@@ -16,6 +16,7 @@ const typeLabels: Record<FeedItem["type"], string> = {
   clue: "线索",
   event: "事件",
   ending: "结局",
+  scene_image: "场景",
 };
 
 function FeedItemCard({ item }: { item: FeedItem }) {
@@ -90,13 +91,44 @@ function FeedItemCard({ item }: { item: FeedItem }) {
         </div>
       );
 
-    case "event":
+    case "event": {
+      // Dramatic styling for caught lies
+      const isLieCaught = item.text.includes("你说你") || item.text.includes("你怎么解释");
       return (
-        <div className={`${baseClasses} bg-slate-800/30 border-slate-700/30 text-slate-400 italic`}>
-          <span className="inline-block text-xs font-medium text-slate-500 bg-slate-700/30 rounded px-1.5 py-0.5 mb-1.5">
-            {typeLabels.event}
+        <div className={`${baseClasses} ${
+          isLieCaught
+            ? "lie-caught bg-red-950/20 border-red-800/40 text-red-100 not-italic"
+            : "bg-slate-800/30 border-slate-700/30 text-slate-400 italic"
+        }`}>
+          <span className={`inline-block text-xs font-medium rounded px-1.5 py-0.5 mb-1.5 ${
+            isLieCaught
+              ? "text-red-300 bg-red-900/40"
+              : "text-slate-500 bg-slate-700/30"
+          }`}>
+            {isLieCaught ? "揭穿谎言" : typeLabels.event}
           </span>
           <p className="whitespace-pre-wrap">{item.text}</p>
+        </div>
+      );
+    }
+
+    case "scene_image":
+      return (
+        <div className={`${baseClasses} bg-slate-900/60 border-slate-600/50 p-0 overflow-hidden`}>
+          <div className="relative">
+            <img
+              src={item.imageUrl}
+              alt={item.text}
+              className="w-full h-auto rounded-t-lg object-cover max-h-80"
+              loading="lazy"
+            />
+            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-slate-900/90 to-transparent px-4 py-3">
+              <span className="inline-block text-xs font-medium text-cyan-300 bg-cyan-900/40 rounded px-1.5 py-0.5 mb-1">
+                {typeLabels.scene_image}
+              </span>
+              <p className="text-slate-200 text-sm">{item.text}</p>
+            </div>
+          </div>
         </div>
       );
 

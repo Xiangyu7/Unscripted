@@ -1,3 +1,5 @@
+import asyncio
+import json
 import sys
 import uuid
 from contextlib import asynccontextmanager
@@ -5,8 +7,9 @@ from typing import Optional
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 # Load .env before config is initialized
@@ -14,12 +17,24 @@ load_dotenv()
 
 from config import Config
 from engine.turn_engine import TurnEngine, sessions
-from schemas.game_state import GameState, TurnRequest, TurnResponse
+from schemas.game_state import (
+    SpeechSynthesisRequest,
+    SpeechSynthesisResponse,
+    TurnRequest,
+    TurnResponse,
+    VoiceProviderState,
+    VoiceStatusResponse,
+    VoiceTranscriptionResponse,
+    VoiceTurnResponse,
+    redact_game_state,
+)
+from services.speech_service import SpeechService, SpeechServiceError
 from stories.gu_family_case import create_initial_state
 
 # Initialize config and engine
 config = Config()
 engine = TurnEngine(config)
+speech_service = SpeechService(config)
 
 
 @asynccontextmanager
@@ -72,6 +87,7 @@ class ResetRequest(BaseModel):
 class ResetResponse(BaseModel):
     session_id: str
     message: str
+    game_state: dict
 
 
 class HealthResponse(BaseModel):
@@ -79,6 +95,17 @@ class HealthResponse(BaseModel):
     provider: str
     model: Optional[str]
     active_sessions: int
+
+
+def _raise_speech_http_error(err: SpeechServiceError) -> None:
+    raise HTTPException(
+        status_code=err.status_code,
+        detail={
+            "message": str(err),
+            "provider": err.provider,
+            "code": err.code,
+        },
+    )
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────
@@ -95,6 +122,26 @@ async def health_check():
     )
 
 
+@app.get("/api/portraits")
+async def get_portraits():
+    """Generate or retrieve cached character portraits."""
+    if not engine.image_agent:
+        return {"portraits": {}}
+    portraits = await engine.image_agent.generate_all_portraits()
+    return {"portraits": portraits}
+
+
+@app.get("/api/portrait/{character_id}")
+async def get_portrait(character_id: str):
+    """Generate or retrieve a single character portrait."""
+    if not engine.image_agent:
+        raise HTTPException(status_code=503, detail="Image service not configured")
+    url = await engine.image_agent.generate_character_portrait(character_id)
+    if not url:
+        raise HTTPException(status_code=404, detail=f"No portrait for '{character_id}'")
+    return {"character_id": character_id, "portrait_url": url}
+
+
 @app.post("/api/reset", response_model=ResetResponse)
 async def reset_session(req: ResetRequest = ResetRequest()):
     """Create or reset a game session."""
@@ -109,7 +156,12 @@ async def reset_session(req: ResetRequest = ResetRequest()):
         )
 
     sessions[sid] = state
-    return ResetResponse(session_id=sid, message="Session created successfully.")
+    engine.init_world(sid)
+    return ResetResponse(
+        session_id=sid,
+        message="Session created successfully.",
+        game_state=redact_game_state(state),
+    )
 
 
 @app.get("/api/state/{session_id}")
@@ -121,20 +173,7 @@ async def get_state(session_id: str):
             status_code=404,
             detail=f"Session '{session_id}' not found.",
         )
-    # Return the full state, but redact the truth for the player
-    state_dict = state.model_dump()
-    # Remove truth details from the response to prevent cheating
-    state_dict["truth"] = {
-        "core_truth": "[REDACTED]",
-        "culprit": state.truth.culprit,
-        "hidden_chain": ["[REDACTED]"] * len(state.truth.hidden_chain),
-    }
-    # Remove character secrets and private knowledge
-    for char in state_dict["characters"]:
-        char["secret"] = "[REDACTED]"
-        char["private_knowledge"] = ["[REDACTED]"]
-        char["hard_boundaries"] = ["[REDACTED]"]
-    return state_dict
+    return redact_game_state(state)
 
 
 @app.post("/api/turn", response_model=TurnResponse)
@@ -157,6 +196,122 @@ async def process_turn(req: TurnRequest):
             status_code=500,
             detail=f"Internal error processing turn: {str(e)}",
         )
+
+
+@app.post("/api/turn/stream")
+async def process_turn_stream(req: TurnRequest):
+    """Process a turn and stream results via SSE — events arrive as they're ready."""
+    if not req.player_action.strip():
+        raise HTTPException(status_code=400, detail="player_action cannot be empty.")
+
+    async def event_stream():
+        try:
+            async for event in engine.process_turn_streaming(
+                req.session_id, req.player_action
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            print(f"[ERROR] Stream turn failed: {e}", file=sys.stderr)
+            yield f"data: {json.dumps({'type': 'error', 'text': f'Internal error: {str(e)}'})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/voice/status", response_model=VoiceStatusResponse)
+async def get_voice_status():
+    status = speech_service.get_status()
+    return VoiceStatusResponse(
+        asr=VoiceProviderState(**status["asr"].__dict__),
+        tts=VoiceProviderState(**status["tts"].__dict__),
+    )
+
+
+@app.post("/api/voice/transcribe", response_model=VoiceTranscriptionResponse)
+async def transcribe_audio(audio: UploadFile = File(...)):
+    payload = await audio.read()
+    try:
+        result = await speech_service.transcribe_audio(
+            payload,
+            filename=audio.filename or "voice-input.wav",
+            content_type=audio.content_type or "audio/wav",
+        )
+    except SpeechServiceError as err:
+        _raise_speech_http_error(err)
+
+    return VoiceTranscriptionResponse(
+        transcript=result.text,
+        provider=result.provider,
+        model=result.model,
+        latency_ms=result.latency_ms,
+        usage=result.usage,
+    )
+
+
+@app.post("/api/voice/turn", response_model=VoiceTurnResponse)
+async def process_voice_turn(
+    session_id: str = Form(...),
+    audio: UploadFile = File(...),
+):
+    payload = await audio.read()
+    try:
+        transcription = await speech_service.transcribe_audio(
+            payload,
+            filename=audio.filename or "voice-turn.wav",
+            content_type=audio.content_type or "audio/wav",
+            session_id=session_id,
+        )
+        turn_result = await engine.process_turn(session_id, transcription.text)
+    except SpeechServiceError as err:
+        _raise_speech_http_error(err)
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err))
+    except Exception as err:
+        print(f"[ERROR] Voice turn failed: {err}", file=sys.stderr)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal error processing voice turn: {str(err)}",
+        )
+
+    return VoiceTurnResponse(
+        transcript=transcription.text,
+        asr=VoiceTranscriptionResponse(
+            transcript=transcription.text,
+            provider=transcription.provider,
+            model=transcription.model,
+            latency_ms=transcription.latency_ms,
+            usage=transcription.usage,
+        ),
+        turn=turn_result,
+    )
+
+
+@app.post("/api/voice/speak", response_model=SpeechSynthesisResponse)
+async def synthesize_speech(req: SpeechSynthesisRequest):
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="text cannot be empty.")
+
+    try:
+        result = await speech_service.synthesize_text(
+            req.text.strip(),
+            voice=req.voice,
+            speed=req.speed,
+            response_format=req.response_format,
+        )
+    except SpeechServiceError as err:
+        _raise_speech_http_error(err)
+
+    return SpeechSynthesisResponse(
+        audio_base64=result.audio_base64,
+        mime_type=result.mime_type,
+        provider=result.provider,
+        model=result.model,
+        voice=result.voice,
+        latency_ms=result.latency_ms,
+    )
 
 
 if __name__ == "__main__":

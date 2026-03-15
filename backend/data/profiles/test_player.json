@@ -1,0 +1,21 @@
+{
+  "games_played": 1,
+  "best_rank": "B",
+  "best_score": 72,
+  "avg_score": 72.0,
+  "total_searches": 8,
+  "total_interrogations": 7,
+  "total_bluffs": 3,
+  "total_accusations": 2,
+  "total_social_actions": 5,
+  "total_stealth_actions": 1,
+  "primary_style": "searcher",
+  "clues_per_game_avg": 5.0,
+  "rounds_per_game_avg": 14.0,
+  "lies_caught_total": 2,
+  "truths_seen": [
+    "self_staged"
+  ],
+  "wins": 1,
+  "losses": 0
+}

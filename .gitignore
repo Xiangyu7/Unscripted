@@ -8,3 +8,6 @@ backend/.env
 *.egg-info/
 dist/
 build/
+frontend/out/
+frontend/tsconfig.tsbuildinfo
+.claude/settings.local.json

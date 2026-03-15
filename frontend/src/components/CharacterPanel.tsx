@@ -55,17 +55,35 @@ function TrustBar({ value }: { value: number }) {
 function CharacterCard({ character }: { character: Character }) {
   return (
     <div className="bg-slate-800 border border-slate-700 rounded-lg p-3 space-y-2">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="text-sm font-bold text-slate-100 truncate">
-            {character.name}
-          </h3>
-          <p className="text-xs text-slate-400">{character.public_role}</p>
+      {/* Header with portrait */}
+      <div className="flex items-start gap-3">
+        {/* Portrait */}
+        {character.portrait_url ? (
+          <img
+            src={character.portrait_url}
+            alt={character.name}
+            className="w-12 h-12 rounded-lg object-cover border border-slate-600 shrink-0"
+          />
+        ) : (
+          <div className="w-12 h-12 rounded-lg bg-slate-700 border border-slate-600 shrink-0 flex items-center justify-center text-lg text-slate-400">
+            {character.name[0]}
+          </div>
+        )}
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <h3 className="text-sm font-bold text-slate-100 truncate">
+                {character.name}
+              </h3>
+              <p className="text-xs text-slate-400">{character.public_role}</p>
+            </div>
+            <span className="shrink-0 text-xs bg-cyan-900/40 text-cyan-300 border border-cyan-700/40 rounded px-2 py-0.5 flex items-center gap-1">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+              {character.location}
+            </span>
+          </div>
         </div>
-        <span className="shrink-0 text-xs bg-slate-700 text-slate-300 rounded px-1.5 py-0.5">
-          {character.location}
-        </span>
       </div>
 
       {/* Style tag */}

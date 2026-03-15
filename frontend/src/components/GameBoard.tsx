@@ -9,6 +9,8 @@ interface GameBoardProps {
   round: number;
   maxRounds: number;
   tension: number;
+  cluesFound: number;
+  totalClues: number;
   onReset: () => void;
   isLoading: boolean;
 }
@@ -20,6 +22,8 @@ export default function GameBoard({
   round,
   maxRounds,
   tension,
+  cluesFound,
+  totalClues,
   onReset,
   isLoading,
 }: GameBoardProps) {
@@ -36,6 +40,16 @@ export default function GameBoard({
       : tension < 65
         ? "text-yellow-400"
         : "text-red-400";
+
+  const roundsLeft = maxRounds - round;
+  const timeUrgency =
+    roundsLeft <= 3
+      ? "text-red-400"
+      : roundsLeft <= 6
+        ? "text-yellow-400"
+        : "text-slate-200";
+
+  const progressPct = totalClues > 0 ? Math.round((cluesFound / totalClues) * 100) : 0;
 
   return (
     <header className="bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -62,18 +76,35 @@ export default function GameBoard({
 
           <span className="hidden sm:inline text-slate-600">|</span>
 
-          <span className="inline-flex items-center gap-1">
-            <span className="text-slate-200">
-              第{round}回合
+          <span className={`inline-flex items-center gap-1 ${timeUrgency}`}>
+            <span>
+              第{round}轮
             </span>
-            <span className="text-slate-500">/ 共{maxRounds}回合</span>
+            <span className="text-slate-500">/ {maxRounds}</span>
+            {roundsLeft <= 5 && (
+              <span className="text-xs">(剩{roundsLeft}轮)</span>
+            )}
+          </span>
+
+          <span className="hidden sm:inline text-slate-600">|</span>
+
+          {/* Clue progress */}
+          <span className="inline-flex items-center gap-1.5">
+            <span className="text-amber-400 text-xs">
+              线索 {cluesFound}/{totalClues}
+            </span>
+            <div className="w-12 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full bg-amber-500 transition-all duration-500"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
           </span>
         </div>
       </div>
 
       {/* Right: Tension + Reset */}
       <div className="flex items-center gap-4 w-full sm:w-auto">
-        {/* Tension meter */}
         <div className="flex items-center gap-2 flex-1 sm:flex-none">
           <span className={`text-sm font-medium ${tensionTextColor} whitespace-nowrap`}>
             紧张度 {tension}
@@ -86,7 +117,6 @@ export default function GameBoard({
           </div>
         </div>
 
-        {/* Reset button */}
         <button
           onClick={onReset}
           disabled={isLoading}

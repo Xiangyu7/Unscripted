@@ -6,49 +6,103 @@ from schemas.game_state import Character, GameState, IntentType
 
 
 def _build_character_system_prompt(
-    character: Character, state: GameState
+    character: Character,
+    state: GameState,
+    scoped_facts: List[str],
+    hard_boundaries: List[str],
 ) -> str:
     """Build the system prompt for a character agent."""
-    pk = "\n".join(f"- {k}" for k in character.private_knowledge)
+    pk = "\n".join(f"- {k}" for k in scoped_facts) or "- 暂无新增信息"
     rm = "\n".join(f"- {k}: {v}" for k, v in character.relation_map.items())
-    hb = "\n".join(f"- {b}" for b in character.hard_boundaries)
+    hb = "\n".join(f"- {b}" for b in hard_boundaries) or "- 避免主动泄露未公开的核心秘密"
 
-    return f"""你是"{character.name}"，{character.public_role}。
+    # Load rich character persona from .md skill file
+    from characters import load_character_skill
+    skill_content = load_character_skill(character.id)
+    depth = _CHARACTER_DEPTH.get(character.id, "")
 
-【你的性格】{character.style}
+    # If we have a full skill sheet, use it as the primary persona
+    persona_block = ""
+    if skill_content:
+        persona_block = f"\n{skill_content}\n"
+
+    return f"""你现在扮演"{character.name}"——你不是AI，你就是这个人。你有自己的想法、情绪和秘密。
+{persona_block}
+
+【你是谁】
+{character.name}，{character.public_role}。{depth}
+
+【对面的人是谁】
+一个叫来调查顾言失踪案的私人侦探。顾家请来的。你不完全信任他——他在调查你们每个人。
+- 你对这个侦探的信任度：{character.trust_to_player}/100（{"你基本不信任他，说话要设防" if character.trust_to_player < 30 else "你稍微信任他，但仍保持警惕" if character.trust_to_player < 60 else "你相对信任他，愿意配合"}）
+- 你身上的嫌疑：{character.suspicion}/100（{"你觉得自己很安全" if character.suspicion < 30 else "你感到压力，要小心应对" if character.suspicion < 60 else "你知道自己被盯上了，非常紧张"}）
+
+【你的性格和说话方式】
+{character.style}
+{character.speaking_rules}
+
 【你的目标】{character.goal}
-【你的恐惧】{character.fear}
-【你的说话方式】{character.speaking_rules}
+【你害怕什么】{character.fear}
 
-【你知道的事情】
+【你知道的事情（侦探不知道这些）】
 {pk}
 
-【你对其他人的看法】
+【你对在场其他人的看法】
 {rm}
 
-【绝对不能说的】
+【绝对红线——打死也不能说的】
 {hb}
 
-【当前局势】
-- 场景：{state.scene}
-- 紧张度：{state.tension}/100
-- 当前阶段：{state.phase}
-- 你当前的嫌疑值：{character.suspicion}（越高越危险）
-- 你对主角的信任：{character.trust_to_player}
+【此刻的场景】
+地点：{state.scene}（顾家老宅内）
+气氛紧张度：{state.tension}/100
+当前阶段：{state.phase}
 
-请以你的角色身份回应玩家的行动。要求：
-1. 完全符合你的人设和说话方式
-2. 绝不违反"绝对不能说的"限制
-3. 根据信任度决定配合程度（信任低则敷衍/警惕/反问）
-4. 回应长度在30-80字之间
-5. 只输出角色的对话和动作描写，不要输出JSON或元数据"""
+【表演要求】
+1. 你就是{character.name}——用她/他的语气、习惯、小动作来说话
+2. 不要"配合调查"——你有自己的利益要保护。该撒谎就撒谎，该回避就回避
+3. 主动出击：反问侦探、转移话题、暗示别人更可疑
+4. 加入身体语言和微表情（攥紧杯子、移开目光、冷笑）
+5. 30-100字，只输出角色的对话和动作描写
+6. 绝不输出JSON、旁白或元数据
+7. 绝不用"作为AI"之类的元发言"""
+
+
+# ── Per-character depth profiles ──────────────────────────────────
+
+_CHARACTER_DEPTH = {
+    "linlan": (
+        "28岁，顾家工作3年的私人秘书。永远穿深色职业装，头发一丝不乱。"
+        "说话时习惯微微偏头，像是在衡量每一个字的分量。"
+        "口头禅：'这个问题……恐怕不在我的职责范围内。'"
+        "紧张时会不自觉地用指尖敲桌面。"
+        "她看起来完美得不真实——而这本身就很可疑。"
+        "她对顾言有一种超越雇佣关系的忠诚——可能是感激，也可能是别的什么。"
+    ),
+    "zhoumu": (
+        "32岁，顾言从小一起长大的兄弟。穿着随意，衬衫扣子总松两颗。"
+        "笑起来声音很大，但笑不到眼睛里。"
+        "口头禅：'哎呀别这么严肃嘛！''说起来……'（每次说'说起来'后面跟的往往是谎话）"
+        "紧张时会反复给自己倒酒、摸鼻子、突然站起来又坐下。"
+        "他嘴上说跟顾言是铁兄弟，但一提到钱就会微妙地变脸。"
+        "他昨晚喝了很多酒——是为了壮胆？还是为了忘记什么？"
+    ),
+    "songzhi": (
+        "26岁，某财经媒体的调查记者。戴细框眼镜，随身带一本黑色笔记本。"
+        "说话像连珠炮：快、准、追问到底。"
+        "口头禅：'等一下，你刚才说……''这条信息很有趣。''我需要确认一下。'"
+        "她总是在观察——你跟别人说话时，她在旁边记笔记。"
+        "习惯性地推眼镜——尤其是发现关键信息的时候。"
+        "她出现在这里'太巧了'——一个调查记者恰好在主人失踪的晚宴上？"
+    ),
+}
 
 
 def _build_character_user_prompt(
     player_action: str, rule_result: dict
 ) -> str:
     """Build the user message for the character agent."""
-    return f"""【玩家刚才做了什么】
+    return f"""【侦探刚才做了什么】
 {player_action}
 
 【规则判断结果】
@@ -215,23 +269,44 @@ def _get_fallback_response(
 
 
 class CharacterAgent:
-    """Character agent that generates in-character NPC responses."""
+    """Character agent with persistent conversation memory per NPC per session.
+
+    Each NPC maintains their own conversation thread — the LLM genuinely
+    remembers every exchange, not through injected summaries but through
+    actual message history. This makes NPCs feel like real people who
+    remember what you said 5 turns ago.
+    """
+
+    # Max conversation history to keep (in messages) to avoid context overflow
+    MAX_HISTORY = 16  # 8 exchanges (user + assistant)
 
     def __init__(self, config: Config):
         self.config = config
         self.client = None
+        # Persistent conversation threads: {(session_id, char_id): [messages]}
+        self._threads: Dict[tuple, List[dict]] = {}
 
         if config.provider == LLMProvider.OPENAI_COMPATIBLE:
             from openai import AsyncOpenAI
-
             self.client = AsyncOpenAI(
                 api_key=config.api_key,
                 base_url=config.base_url,
             )
         elif config.provider == LLMProvider.ANTHROPIC:
             import anthropic
-
             self.client = anthropic.AsyncAnthropic(api_key=config.anthropic_key)
+
+    def _get_thread(self, session_id: str, char_id: str) -> List[dict]:
+        """Get or create the conversation thread for a character."""
+        key = (session_id, char_id)
+        if key not in self._threads:
+            self._threads[key] = []
+        return self._threads[key]
+
+    def _trim_thread(self, thread: List[dict]):
+        """Keep thread within token budget by trimming old messages."""
+        while len(thread) > self.MAX_HISTORY:
+            thread.pop(0)
 
     async def generate_response(
         self,
@@ -240,41 +315,72 @@ class CharacterAgent:
         player_action: str,
         intent: IntentType,
         rule_result: dict,
+        extra_context: str = "",
+        scoped_facts: List[str] | None = None,
+        hard_boundaries: List[str] | None = None,
     ) -> str:
         """
-        Generate an in-character response for the given character.
+        Generate an in-character response with persistent conversation memory.
 
-        Returns the character's dialogue/action text as a string.
+        The NPC's LLM sees the FULL conversation history — it genuinely
+        remembers what was said before, not through summaries but through
+        actual message context.
         """
         if self.config.provider == LLMProvider.FALLBACK:
             return _get_fallback_response(character, intent, rule_result)
 
-        system_prompt = _build_character_system_prompt(character, state)
+        # Build system prompt (updates each turn with current state)
+        system_prompt = _build_character_system_prompt(
+            character,
+            state,
+            scoped_facts or character.private_knowledge,
+            hard_boundaries or character.hard_boundaries,
+        )
+        if extra_context:
+            system_prompt += "\n\n" + extra_context
+
         user_prompt = _build_character_user_prompt(player_action, rule_result)
+
+        # Get persistent conversation thread
+        thread = self._get_thread(state.session_id, character.id)
+
+        # Add new user message to thread
+        thread.append({"role": "user", "content": user_prompt})
+        self._trim_thread(thread)
 
         try:
             if self.config.provider == LLMProvider.OPENAI_COMPATIBLE:
+                # System prompt + full conversation history
+                messages = [{"role": "system", "content": system_prompt}] + thread
                 response = await self.client.chat.completions.create(
                     model=self.config.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
+                    messages=messages,
                     temperature=0.9,
                     max_tokens=300,
                 )
-                return response.choices[0].message.content.strip()
+                reply = response.choices[0].message.content.strip()
 
             elif self.config.provider == LLMProvider.ANTHROPIC:
                 response = await self.client.messages.create(
                     model=self.config.model,
                     max_tokens=300,
                     system=system_prompt,
-                    messages=[{"role": "user", "content": user_prompt}],
+                    messages=thread,
                     temperature=0.9,
                 )
-                return response.content[0].text.strip()
+                reply = response.content[0].text.strip()
+            else:
+                return _get_fallback_response(character, intent, rule_result)
+
+            # Save assistant reply to thread — NPC will remember this next time
+            thread.append({"role": "assistant", "content": reply})
+            self._trim_thread(thread)
+
+            return reply
 
         except Exception as e:
+            # Remove the failed user message from thread
+            if thread and thread[-1]["role"] == "user":
+                thread.pop()
             print(f"[CharacterAgent] LLM call failed for {character.name}: {e}, falling back")
             return _get_fallback_response(character, intent, rule_result)
