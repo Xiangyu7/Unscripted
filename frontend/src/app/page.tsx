@@ -863,14 +863,24 @@ export default function HomePage() {
     initializeGame();
   }, [initializeGame]);
 
-  const handleUndo = useCallback(() => {
-    setFeedItems((prev) => {
-      // Find the last "player" item and remove everything from it onwards
-      const lastPlayerIdx = prev.findLastIndex((item) => item.type === "player");
-      if (lastPlayerIdx < 0) return prev;
-      return prev.slice(0, lastPlayerIdx);
-    });
-  }, []);
+  const handleUndo = useCallback(async () => {
+    if (!gameState || isBusy) return;
+    try {
+      const res = await fetch(`${API_URL}/api/undo/${gameState.session_id}`, { method: "POST" });
+      if (!res.ok) return;
+      const data = await res.json();
+      // Restore game state from server
+      if (data.game_state) {
+        setGameState(data.game_state);
+      }
+      // Remove feed items from the last player action onwards
+      setFeedItems((prev) => {
+        const lastPlayerIdx = prev.findLastIndex((item) => item.type === "player");
+        if (lastPlayerIdx < 0) return prev;
+        return prev.slice(0, lastPlayerIdx);
+      });
+    } catch { /* ignore */ }
+  }, [gameState, isBusy]);
 
   const handleQuickAction = useCallback(
     (action: string) => {

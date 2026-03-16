@@ -553,10 +553,91 @@ class TurnEngine:
         self._last_clue_counts: Dict[str, int] = {}
         self._pacing_state: Dict[str, dict] = {}
 
+        # Undo snapshots: session_id → previous state snapshot
+        self._undo_snapshots: Dict[str, dict] = {}
+
     def init_world(self, session_id: str):
         """Initialize world state and truth resolver for a new session."""
         self.world.create_initial_state(session_id)
         self.truth_resolver.init_session(session_id)
+
+    def _save_undo_snapshot(self, session_id: str):
+        """Save a deep snapshot of all per-session state before a turn."""
+        import copy
+        state = sessions.get(session_id)
+        if state is None:
+            return
+        self._undo_snapshots[session_id] = {
+            "game_state": state.model_copy(deep=True),
+            "truth_state": copy.deepcopy(self.truth_resolver.get_state(session_id)),
+            "world_state": copy.deepcopy(self.world.get_state(session_id)),
+            "psych_states": {
+                char.id: copy.deepcopy(self.psychology.get_state(session_id, char.id))
+                for char in state.characters
+            },
+            "stuck_turns": self._stuck_turns.get(session_id, 0),
+            "last_clue_count": self._last_clue_counts.get(session_id, 0),
+            "pacing_state": copy.deepcopy(self._pacing_state.get(session_id)),
+            "npc_locations": copy.deepcopy(
+                self.npc_autonomy._locations.get(session_id, {})
+            ),
+            "continuity": copy.deepcopy(
+                self.continuity._states.get(session_id)
+            ),
+            "lie_records": copy.deepcopy(
+                self.lie_detector._records.get(session_id, [])
+            ),
+            "lie_triggered": copy.deepcopy(
+                self.lie_detector._triggered.get(session_id, set())
+            ),
+            "notebook": copy.deepcopy(
+                self.notebook._notebooks.get(session_id)
+            ),
+        }
+
+    def undo_last_turn(self, session_id: str) -> bool:
+        """Restore the snapshot saved before the last turn. Returns True on success."""
+        import copy
+        snap = self._undo_snapshots.pop(session_id, None)
+        if snap is None:
+            return False
+
+        # Restore GameState
+        sessions[session_id] = snap["game_state"]
+
+        # Restore truth resolver
+        self.truth_resolver._states[session_id] = snap["truth_state"]
+
+        # Restore world state
+        if snap["world_state"] is not None:
+            self.world._states[session_id] = snap["world_state"]
+
+        # Restore psychology (keyed by (session_id, char_id) tuple)
+        for char_id, ps in snap["psych_states"].items():
+            self.psychology._states[(session_id, char_id)] = ps
+
+        # Restore progress tracking
+        self._stuck_turns[session_id] = snap["stuck_turns"]
+        self._last_clue_counts[session_id] = snap["last_clue_count"]
+        if snap["pacing_state"] is not None:
+            self._pacing_state[session_id] = snap["pacing_state"]
+
+        # Restore NPC locations
+        if snap["npc_locations"]:
+            self.npc_autonomy._locations[session_id] = snap["npc_locations"]
+
+        # Restore continuity + lie detector + notebook
+        if snap["continuity"] is not None:
+            self.continuity._states[session_id] = snap["continuity"]
+        self.lie_detector._records[session_id] = snap["lie_records"]
+        self.lie_detector._triggered[session_id] = snap["lie_triggered"]
+        if snap["notebook"] is not None:
+            self.notebook._notebooks[session_id] = snap["notebook"]
+
+        return True
+
+    def has_undo(self, session_id: str) -> bool:
+        return session_id in self._undo_snapshots
 
     def _is_complex_turn(
         self, action_result, breaking_points: dict,
@@ -1785,6 +1866,10 @@ class TurnEngine:
         if ws is None:
             self.init_world(session_id)
             ws = self.world.get_state(session_id)
+
+        # ── Save undo snapshot before any state mutation ──
+        if not state.game_over:
+            self._save_undo_snapshot(session_id)
 
         # ── 2. Game over ──
         if state.game_over:

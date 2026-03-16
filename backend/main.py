@@ -310,6 +310,22 @@ async def get_report(session_id: str):
     }
 
 
+@app.post("/api/undo/{session_id}")
+async def undo_turn(session_id: str):
+    """Undo the last turn, restoring all game state including NPC memory."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+    if not engine.has_undo(session_id):
+        raise HTTPException(status_code=400, detail="Nothing to undo.")
+    engine.undo_last_turn(session_id)
+    state = sessions[session_id]
+    return {
+        "success": True,
+        "round": state.round,
+        "game_state": redact_game_state(state),
+    }
+
+
 @app.post("/api/turn", response_model=TurnResponse)
 async def process_turn(req: TurnRequest):
     """Process a player's turn action."""
