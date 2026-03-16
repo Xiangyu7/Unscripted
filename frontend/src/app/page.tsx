@@ -254,19 +254,25 @@ export default function HomePage() {
     !isInteractiveBlocked &&
     !isBusy;
 
+  // Static portrait base path (works with Next.js basePath in prod)
+  const portraitBase = (process.env.NODE_ENV === "production" ? "/Unscripted" : "") + "/portraits";
+
   // Memoize characters with mood-aware portrait URLs
   const charactersWithPortraits = useMemo(
     () => (gameState?.characters || []).map(c => {
-      // Try mood-specific portrait first, then default portrait
       const mood = c.mood || "calm";
+      // 1. Static pre-generated portrait (fastest, no API call)
+      const staticUrl = `${portraitBase}/${c.id}_${mood}.png`;
+      // 2. API-fetched mood portrait
       const moodUrl = moodPortraits[c.id]?.[mood];
+      // 3. API-fetched default portrait
       const fallbackUrl = portraits[c.id];
       return {
         ...c,
-        portrait_url: c.portrait_url || moodUrl || fallbackUrl,
+        portrait_url: c.portrait_url || staticUrl || moodUrl || fallbackUrl,
       };
     }),
-    [gameState?.characters, portraits, moodPortraits]
+    [gameState?.characters, portraits, moodPortraits, portraitBase]
   );
 
   const addFeedItems = useCallback((items: FeedItem[]) => {
