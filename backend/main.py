@@ -124,22 +124,34 @@ async def health_check():
 
 @app.get("/api/portraits")
 async def get_portraits():
-    """Generate or retrieve cached character portraits."""
+    """Generate or retrieve cached character portraits (default mood: calm)."""
     if not engine.image_agent:
         return {"portraits": {}}
     portraits = await engine.image_agent.generate_all_portraits()
     return {"portraits": portraits}
 
 
+@app.get("/api/portraits/all-moods")
+async def get_all_mood_portraits():
+    """Pre-generate all mood variants for all characters.
+
+    Returns {char_id: {mood: url}}. Call at game start to pre-cache.
+    """
+    if not engine.image_agent:
+        return {"portraits": {}}
+    variants = await engine.image_agent.generate_all_mood_variants()
+    return {"portraits": variants}
+
+
 @app.get("/api/portrait/{character_id}")
-async def get_portrait(character_id: str):
-    """Generate or retrieve a single character portrait."""
+async def get_portrait(character_id: str, mood: str = "calm"):
+    """Generate or retrieve a character portrait for a specific mood."""
     if not engine.image_agent:
         raise HTTPException(status_code=503, detail="Image service not configured")
-    url = await engine.image_agent.generate_character_portrait(character_id)
+    url = await engine.image_agent.generate_character_portrait(character_id, mood)
     if not url:
         raise HTTPException(status_code=404, detail=f"No portrait for '{character_id}'")
-    return {"character_id": character_id, "portrait_url": url}
+    return {"character_id": character_id, "mood": mood, "portrait_url": url}
 
 
 @app.post("/api/reset", response_model=ResetResponse)

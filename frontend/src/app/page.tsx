@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { BrowserWavRecorder } from "@/lib/audio";
 import { AmbientAudioManager } from "@/lib/ambient";
 import {
+  getMoodPortraits,
   getPortraits,
   getVoiceStatus,
   resetGame,
@@ -218,6 +219,7 @@ function getPreferredBrowserVoice(): SpeechSynthesisVoice | null {
 export default function HomePage() {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [portraits, setPortraits] = useState<Record<string, string>>({});
+  const [moodPortraits, setMoodPortraits] = useState<Record<string, Record<string, string>>>({});
   const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -243,13 +245,19 @@ export default function HomePage() {
     !isAwaitingVote &&
     !isBusy;
 
-  // Memoize characters with portrait URLs merged
+  // Memoize characters with mood-aware portrait URLs
   const charactersWithPortraits = useMemo(
-    () => (gameState?.characters || []).map(c => ({
-      ...c,
-      portrait_url: c.portrait_url || portraits[c.id],
-    })),
-    [gameState?.characters, portraits]
+    () => (gameState?.characters || []).map(c => {
+      // Try mood-specific portrait first, then default portrait
+      const mood = c.mood || "calm";
+      const moodUrl = moodPortraits[c.id]?.[mood];
+      const fallbackUrl = portraits[c.id];
+      return {
+        ...c,
+        portrait_url: c.portrait_url || moodUrl || fallbackUrl,
+      };
+    }),
+    [gameState?.characters, portraits, moodPortraits]
   );
 
   const addFeedItems = useCallback((items: FeedItem[]) => {
@@ -403,9 +411,15 @@ export default function HomePage() {
       setGameState(state);
 
       // Fetch portraits in background (don't block game start)
+      // Fetch default portraits immediately, then mood variants in background
       getPortraits().then((p) => {
         if (Object.keys(p).length > 0) {
           setPortraits(p);
+        }
+      });
+      getMoodPortraits().then((mp) => {
+        if (Object.keys(mp).length > 0) {
+          setMoodPortraits(mp);
         }
       });
 

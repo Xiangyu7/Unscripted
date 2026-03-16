@@ -141,6 +141,17 @@ export async function getPortraits(): Promise<Record<string, string>> {
   }
 }
 
+export async function getMoodPortraits(): Promise<Record<string, Record<string, string>>> {
+  try {
+    const res = await fetch(`${API_URL}/api/portraits/all-moods`);
+    if (!res.ok) return {};
+    const data = await res.json();
+    return data.portraits || {};
+  } catch {
+    return {};
+  }
+}
+
 export async function getVoiceStatus(): Promise<VoiceStatusResponse> {
   const res = await fetch(`${API_URL}/api/voice/status`);
   if (!res.ok) {

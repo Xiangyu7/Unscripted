@@ -105,13 +105,12 @@ class ImageAgent:
             level = "low"
         return f"{scene}_{level}"
 
-    # ── Character portrait prompts ──
-    CHARACTER_PORTRAIT_PROMPTS = {
+    # ── Character portrait base prompts ──
+    _PORTRAIT_BASE = {
         "linlan": (
             "Portrait of a Chinese woman, age 28, professional secretary, "
             "wearing dark formal suit, hair pulled back neatly, "
-            "cold and composed expression, slight head tilt, "
-            "piercing intelligent eyes, subtle tension in jaw, "
+            "piercing intelligent eyes, "
             "dim warm lighting, dark background, "
             "cinematic portrait, film noir style, mystery atmosphere, "
             "photorealistic, upper body shot"
@@ -119,9 +118,8 @@ class ImageAgent:
         "zhoumu": (
             "Portrait of a Chinese man, age 32, casual wealthy look, "
             "unbuttoned collar on dress shirt, slightly disheveled, "
-            "forced smile that doesn't reach his eyes, "
-            "holding a whiskey glass, nervous energy, "
-            "handsome but anxious, sweat on forehead, "
+            "holding a whiskey glass, "
+            "handsome, "
             "dim warm lighting, dark background, "
             "cinematic portrait, film noir style, mystery atmosphere, "
             "photorealistic, upper body shot"
@@ -130,7 +128,6 @@ class ImageAgent:
             "Portrait of a young Chinese woman, age 26, journalist, "
             "wearing thin-frame glasses, sharp observant eyes, "
             "holding a small black notebook and pen, "
-            "confident slight smirk, analytical expression, "
             "smart casual outfit, press badge visible, "
             "dim warm lighting, dark background, "
             "cinematic portrait, film noir style, mystery atmosphere, "
@@ -138,41 +135,103 @@ class ImageAgent:
         ),
     }
 
+    # ── Mood expression modifiers (appended to base prompt) ──
+    _MOOD_EXPRESSIONS: Dict[str, Dict[str, str]] = {
+        "linlan": {
+            "calm":      "cold and composed expression, slight confident head tilt, icy demeanor",
+            "guarded":   "guarded expression, slightly narrowed eyes, lips pressed together, wary",
+            "nervous":   "micro-tension in jaw, slightly wider eyes, fingers gripping cuff, controlled anxiety",
+            "fearful":   "fear breaking through composure, eyes darting, pale complexion, hand near throat",
+            "angry":     "cold fury in eyes, sharp jawline tense, intimidating glare, controlled rage",
+            "desperate": "red-rimmed eyes, hair coming loose, mascara slightly smeared, facade crumbling",
+        },
+        "zhoumu": {
+            "calm":      "genuine relaxed smile, confident posture, at ease with drink in hand",
+            "guarded":   "forced smile that doesn't reach eyes, nervous energy, sweat on forehead",
+            "nervous":   "fidgeting with glass, biting lower lip, eyes avoiding contact, anxious",
+            "fearful":   "wide frightened eyes, pale face, drink spilled, trembling hand, panicked",
+            "angry":     "red face, veins visible on forehead, jaw clenched, aggressive stance, furious",
+            "desperate": "disheveled hair, loosened tie, bloodshot eyes, tear streaks, broken man",
+        },
+        "songzhi": {
+            "calm":      "confident slight smirk, analytical expression, glasses glinting, in control",
+            "guarded":   "pushing glasses up nervously, guarded smile, notebook clutched to chest",
+            "nervous":   "rapid blinking, pen tapping nervously, looking over shoulder, uneasy",
+            "fearful":   "glasses askew, notebook dropped, genuine fear in eyes, backing away",
+            "angry":     "sharp accusatory glare, pointing finger, righteous anger, journalist interrogating",
+            "desperate": "glasses off, rubbing eyes, exhausted expression, dark circles, defeated",
+        },
+    }
+
+    # Keep backward compat
+    CHARACTER_PORTRAIT_PROMPTS = {
+        k: f"{v}, cold and composed expression" for k, v in _PORTRAIT_BASE.items()
+    }
+
     async def generate_character_portrait(
-        self, character_id: str, use_cache: bool = True
+        self, character_id: str, mood: str = "calm", use_cache: bool = True
     ) -> Optional[str]:
-        """Generate a character portrait image. Returns URL or None."""
-        cache_key = f"portrait_{character_id}"
+        """Generate a character portrait for a specific mood. Returns URL or None."""
+        cache_key = f"portrait_{character_id}_{mood}"
         if use_cache and cache_key in self._cache:
             return self._cache[cache_key]
 
-        prompt = self.CHARACTER_PORTRAIT_PROMPTS.get(character_id)
-        if not prompt:
+        base = self._PORTRAIT_BASE.get(character_id)
+        if not base:
             return None
+
+        # Get mood-specific expression
+        expressions = self._MOOD_EXPRESSIONS.get(character_id, {})
+        expression = expressions.get(mood, expressions.get("calm", "neutral expression"))
+
+        prompt = f"{base}, {expression}"
 
         try:
             image_url = await self._call_modelscope(prompt)
             if image_url:
                 self._cache[cache_key] = image_url
-                print(f"[ImageAgent] Portrait generated for {character_id}: {image_url[:60]}...")
+                print(f"[ImageAgent] Portrait generated for {character_id}/{mood}: {image_url[:60]}...")
             return image_url
         except Exception as e:
-            print(f"[ImageAgent] Portrait generation failed for {character_id}: {e}")
+            print(f"[ImageAgent] Portrait generation failed for {character_id}/{mood}: {e}")
             return None
 
-    async def generate_all_portraits(self) -> dict:
-        """Generate portraits for all characters. Returns {char_id: url}."""
-        import asyncio
+    async def generate_all_portraits(self, moods: Optional[Dict[str, str]] = None) -> dict:
+        """Generate portraits for all characters. Returns {char_id: url}.
+
+        If moods is provided ({char_id: mood}), generates mood-specific portraits.
+        Otherwise generates default 'calm' portraits.
+        """
         results = {}
-        tasks = {
-            cid: self.generate_character_portrait(cid)
-            for cid in self.CHARACTER_PORTRAIT_PROMPTS
-        }
-        for cid, task in tasks.items():
-            url = await task
+        for cid in self._PORTRAIT_BASE:
+            mood = (moods or {}).get(cid, "calm")
+            url = await self.generate_character_portrait(cid, mood)
             if url:
                 results[cid] = url
         return results
+
+    async def generate_all_mood_variants(self) -> Dict[str, Dict[str, str]]:
+        """Pre-generate all mood variants for all characters.
+
+        Returns {char_id: {mood: url}}.
+        Call this at game start to pre-cache all expression variants.
+        """
+        all_variants: Dict[str, Dict[str, str]] = {}
+        tasks = []
+
+        for cid in self._PORTRAIT_BASE:
+            all_variants[cid] = {}
+            expressions = self._MOOD_EXPRESSIONS.get(cid, {})
+            for mood in expressions:
+                tasks.append((cid, mood, self.generate_character_portrait(cid, mood, use_cache=True)))
+
+        for cid, mood, coro in tasks:
+            url = await coro
+            if url:
+                all_variants[cid][mood] = url
+
+        print(f"[ImageAgent] Pre-generated {sum(len(v) for v in all_variants.values())} mood variants")
+        return all_variants
 
     async def generate_scene_image(
         self,
