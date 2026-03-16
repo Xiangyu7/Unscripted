@@ -34,7 +34,7 @@ function RecentRecap({ events, round }: { events: GameEvent[]; round: number }) 
       </h3>
       <div className="space-y-1 max-h-32 overflow-y-auto">
         {recentEvents.map((evt, i) => (
-          <div key={i} className="flex items-start gap-1.5 text-xs">
+          <div key={`evt-${evt.round}-${i}`} className="flex items-start gap-1.5 text-xs">
             <span className="shrink-0 text-slate-600 font-mono w-4 text-right">
               {evt.round}
             </span>
@@ -100,7 +100,7 @@ function ClueConnections({ clues }: { clues: Clue[] }) {
       <div className="space-y-1">
         {deductions.map((d, i) => (
           <div
-            key={i}
+            key={`ded-${i}-${d.slice(0, 10)}`}
             className="text-xs text-amber-200/80 bg-amber-950/20 border border-amber-800/20 rounded px-2 py-1.5 leading-snug"
           >
             {d}

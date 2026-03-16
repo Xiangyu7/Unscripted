@@ -118,6 +118,16 @@ export async function submitTurnStream(
       }
     }
   }
+
+  // Process any remaining data in the buffer after stream ends
+  if (buffer.trim().startsWith("data: ")) {
+    try {
+      const event = JSON.parse(buffer.trim().slice(6));
+      onEvent(event);
+    } catch {
+      // Skip malformed final event
+    }
+  }
 }
 
 export async function getPortraits(): Promise<Record<string, string>> {

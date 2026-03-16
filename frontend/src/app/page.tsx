@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserWavRecorder } from "@/lib/audio";
 import { AmbientAudioManager } from "@/lib/ambient";
 import {
@@ -243,6 +243,15 @@ export default function HomePage() {
     !isAwaitingVote &&
     !isBusy;
 
+  // Memoize characters with portrait URLs merged
+  const charactersWithPortraits = useMemo(
+    () => (gameState?.characters || []).map(c => ({
+      ...c,
+      portrait_url: c.portrait_url || portraits[c.id],
+    })),
+    [gameState?.characters, portraits]
+  );
+
   const addFeedItems = useCallback((items: FeedItem[]) => {
     setFeedItems((prev) => [...prev, ...items]);
   }, []);
@@ -460,6 +469,13 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-clear voice errors after 5 seconds
+  useEffect(() => {
+    if (!voiceError) return;
+    const timer = setTimeout(() => setVoiceError(null), 5000);
+    return () => clearTimeout(timer);
+  }, [voiceError]);
+
   useEffect(() => {
     return () => {
       stopPlayback();
@@ -533,9 +549,10 @@ export default function HomePage() {
                   if (voicePlaybackEnabled && voiceStatus?.tts.available && event.voice) {
                     synthesizeSpeech(event.text, event.voice, event.speed).then((speech) => {
                       const audio = new Audio();
+                      // Set handlers BEFORE assigning src to avoid race condition
                       audio.oncanplaythrough = () => audio.play().catch(() => {});
+                      audio.onerror = () => { audio.src = ""; };
                       audio.src = `data:${speech.mime_type};base64,${speech.audio_base64}`;
-                      audio.load();
                     }).catch(() => {});
                   }
                 }
@@ -572,8 +589,10 @@ export default function HomePage() {
                 break;
               case "state":
                 // Update game state from streamed data
-                if (event.game_state) {
-                  setGameState(event.game_state as unknown as GameState);
+                if (event.game_state && typeof event.game_state === "object" && "session_id" in (event.game_state as unknown as Record<string, unknown>)) {
+                  setGameState(event.game_state as GameState);
+                } else if (event.game_state) {
+                  setGameState(event.game_state as GameState);
                 } else {
                   setGameState((prev) =>
                     prev ? {
@@ -663,6 +682,9 @@ export default function HomePage() {
       }
 
       const voiceTurn = await submitVoiceTurn(gameState.session_id, recording.blob);
+      if (!voiceTurn.transcript?.trim()) {
+        throw new Error("语音识别结果为空，请再试一次。");
+      }
       addFeedItems([
         {
           id: nextFeedId(),
@@ -909,10 +931,7 @@ export default function HomePage() {
             round={gameState?.round || 0}
             scene={gameState?.scene || ""}
           />
-          <CharacterPanel characters={(gameState?.characters || []).map(c => ({
-                ...c,
-                portrait_url: c.portrait_url || portraits[c.id],
-              }))} />
+          <CharacterPanel characters={charactersWithPortraits} />
           <CluePanel clues={gameState?.clues || []} />
           <WorldLedger events={gameState?.events || []} />
         </div>
@@ -943,10 +962,7 @@ export default function HomePage() {
 
           <div className="flex-1 overflow-y-auto p-3">
             {sidebarTab === "characters" ? (
-              <CharacterPanel characters={(gameState?.characters || []).map(c => ({
-                ...c,
-                portrait_url: c.portrait_url || portraits[c.id],
-              }))} />
+              <CharacterPanel characters={charactersWithPortraits} />
             ) : (
               <div className="space-y-4">
                 <DetectiveNotebook

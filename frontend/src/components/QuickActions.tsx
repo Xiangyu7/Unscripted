@@ -118,9 +118,9 @@ export default function QuickActions({
   return (
     <div className="px-4 pb-3">
       <div className="flex flex-wrap gap-1.5">
-        {actions.map((action) => (
+        {actions.map((action, index) => (
           <button
-            key={action}
+            key={`${index}-${action}`}
             onClick={() => onAction(action)}
             disabled={disabled}
             className="btn-transition text-xs px-2.5 py-1.5 rounded-full border border-slate-600 text-slate-400 hover:text-amber-300 hover:border-amber-600/50 hover:bg-amber-950/20 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-slate-400 disabled:hover:border-slate-600 disabled:hover:bg-transparent"

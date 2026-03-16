@@ -23,7 +23,7 @@ export default function WorldLedger({ events }: WorldLedgerProps) {
           <div className="max-h-48 overflow-y-auto p-2 space-y-1.5">
             {events.map((event, index) => (
               <div
-                key={index}
+                key={`${event.round}-${event.type}-${index}`}
                 className="flex items-start gap-2 text-xs"
               >
                 <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded bg-slate-700 text-slate-400 font-mono text-[10px]">
