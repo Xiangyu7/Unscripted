@@ -32,6 +32,10 @@ from systems.score_system import calculate_score
 from systems.tension_system import TensionConductor
 from systems.npc_interaction import NPCInteractionSystem, build_memory_context
 from systems.npc_secret_conversation import SecretConversationSystem
+from systems.notebook_system import NotebookSystem
+from systems.checkpoint_system import CheckpointSystem
+from systems.action_cost_system import ActionCostSystem
+from systems.confrontation_system import ConfrontationSystem
 from engine.truth_resolver import TruthResolver
 
 # Services (外部 API 封装)
@@ -40,6 +44,8 @@ from config import Config, LLMProvider
 from engine.open_action_engine import OpenActionEngine
 from engine.world_state import WorldStateManager
 from schemas.game_state import (
+    CheckpointState,
+    ConfrontationState,
     Event,
     GameState,
     IntentType,
@@ -526,6 +532,10 @@ class TurnEngine:
         self.lie_detector = LieDetector()
         self.npc_interaction = NPCInteractionSystem()
         self.secret_conversations = SecretConversationSystem()
+        self.notebook = NotebookSystem()
+        self.checkpoint_system = CheckpointSystem()
+        self.action_cost_system = ActionCostSystem()
+        self.confrontation_system = ConfrontationSystem()
 
         # Layer 2: DM (final arbiter)
         self.dm = DMAgent(config)
@@ -1798,6 +1808,116 @@ class TurnEngine:
                 yield evt
             return
 
+        # ── Resolve pending checkpoint ──
+        if (
+            state.checkpoint_state
+            and state.checkpoint_state.status == "awaiting_hypothesis"
+        ):
+            choice_id = player_action.strip()
+            # Match by option id or label
+            matched_id = None
+            for opt in state.checkpoint_state.options:
+                if choice_id == opt.id or choice_id == opt.label:
+                    matched_id = opt.id
+                    break
+            if not matched_id and state.checkpoint_state.options:
+                # Try numeric index (1-based)
+                try:
+                    idx = int(choice_id) - 1
+                    if 0 <= idx < len(state.checkpoint_state.options):
+                        matched_id = state.checkpoint_state.options[idx].id
+                except ValueError:
+                    pass
+            if not matched_id:
+                matched_id = state.checkpoint_state.options[0].id if state.checkpoint_state.options else "unsure"
+
+            feedback, weight_adj = self.checkpoint_system.resolve(
+                state.checkpoint_state, matched_id
+            )
+            # Apply weight adjustments to truth resolver
+            tr_state = self.truth_resolver.get_state(session_id)
+            for truth_id, delta in weight_adj.items():
+                tr_state.truth_weights[truth_id] = tr_state.truth_weights.get(truth_id, 1.0) + delta
+
+            state.checkpoint_state.status = "resolved"
+            state.checkpoint_state.player_choice_id = matched_id
+            state.checkpoint_state.feedback = feedback
+            state.checkpoints_completed.append(state.checkpoint_state.checkpoint_round)
+
+            yield {"type": "checkpoint_feedback", "text": feedback, "choice_id": matched_id}
+            state.checkpoint_state = None  # Clear after resolving
+            yield {"type": "state", "round": state.round, "phase": state.phase,
+                   "tension": state.tension, "scene": state.scene,
+                   "game_over": False, "game_state": redact_game_state(state)}
+            yield {"type": "done"}
+            return
+
+        # ── Resolve pending confrontation ──
+        if (
+            state.confrontation_state
+            and state.confrontation_state.status == "awaiting_player_choice"
+        ):
+            choice_id = player_action.strip()
+            matched_id = None
+            for opt in state.confrontation_state.options:
+                if choice_id == opt.id or choice_id == opt.label:
+                    matched_id = opt.id
+                    break
+            if not matched_id and state.confrontation_state.options:
+                try:
+                    idx = int(choice_id) - 1
+                    if 0 <= idx < len(state.confrontation_state.options):
+                        matched_id = state.confrontation_state.options[idx].id
+                except ValueError:
+                    pass
+            if not matched_id:
+                matched_id = state.confrontation_state.options[0].id if state.confrontation_state.options else None
+
+            if matched_id:
+                outcome = self.confrontation_system.resolve(
+                    session_id, state.confrontation_state, matched_id
+                )
+                if outcome:
+                    # Apply effects
+                    target_id = state.confrontation_state.target_character_id
+                    for char in state.characters:
+                        if char.id == target_id:
+                            char.trust_to_player = _clamp(char.trust_to_player + outcome.trust_change)
+                            char.suspicion = _clamp(char.suspicion + outcome.suspicion_change)
+                            break
+                    state.tension = _clamp(state.tension + outcome.tension_change)
+
+                    state.confrontation_state.status = "resolved"
+                    state.confrontation_state.player_choice_id = matched_id
+                    state.confrontation_state.outcome = outcome.outcome_type
+                    state.confrontation_state.result_text = outcome.result_text
+
+                    yield {
+                        "type": "confrontation_result",
+                        "text": outcome.result_text,
+                        "outcome": outcome.outcome_type,
+                        "character": state.confrontation_state.target_character_name,
+                        "character_id": target_id,
+                    }
+
+                    # Reveal clue if outcome grants one
+                    if outcome.reveals_clue:
+                        for clue in state.clues:
+                            if clue.id == outcome.reveals_clue and not clue.discovered:
+                                clue.discovered = True
+                                clue.holder = "player"
+                                if clue.text not in state.knowledge.player_known:
+                                    state.knowledge.player_known.append(clue.text)
+                                yield {"type": "clue", "text": clue.text, "id": clue.id}
+                                break
+
+            state.confrontation_state = None
+            yield {"type": "state", "round": state.round, "phase": state.phase,
+                   "tension": state.tension, "scene": state.scene,
+                   "game_over": False, "game_state": redact_game_state(state)}
+            yield {"type": "done"}
+            return
+
         # ══════════════════════════════════════════════════════════════
         # Phase 0: Synchronous computations (0ms)
         # ══════════════════════════════════════════════════════════════
@@ -1807,8 +1927,34 @@ class TurnEngine:
         act_hint = 1 if state.round + 1 <= 6 else 2 if state.round + 1 <= 15 else 3
         pacing_snapshot = self._build_pacing_snapshot(session_id, act_hint)
 
+        # ── Action cost: reset points at start of turn ──
+        state.action_points = self.action_cost_system.reset(state.max_action_points)
+
+        # ── Checkpoint: check if this round triggers a reasoning checkpoint ──
+        next_round = state.round + 1
+        if self.checkpoint_system.should_trigger(next_round, state.checkpoints_completed):
+            discovered_clue_ids_cp = [c.id for c in state.clues if c.discovered]
+            cp_state = self.checkpoint_system.get_checkpoint(next_round, discovered_clue_ids_cp)
+            state.checkpoint_state = cp_state
+            state.round = next_round
+            yield {
+                "type": "checkpoint",
+                "prompt": cp_state.prompt,
+                "options": [{"id": o.id, "label": o.label, "kind": o.kind} for o in cp_state.options],
+            }
+            yield {"type": "state", "round": state.round, "phase": state.phase,
+                   "tension": state.tension, "scene": state.scene,
+                   "game_over": False, "game_state": redact_game_state(state)}
+            yield {"type": "done"}
+            return
+
         # ── 3. NPC Autonomy ──
         discovered_clue_ids = [c.id for c in state.clues if c.discovered]
+        # Snapshot present characters BEFORE NPC autonomy moves them (for confrontation detection)
+        scene_short_pre_npc = _get_current_scene_short(state.scene, state.available_scenes)
+        present_char_ids_at_turn_start = [
+            c.id for c in state.characters if c.location == scene_short_pre_npc
+        ]
         psych_states_for_npc = {}
         for char in state.characters:
             ps = self.psychology.get_state(session_id, char.id)
@@ -1866,12 +2012,37 @@ class TurnEngine:
                     current = getattr(ps, attr, 0.0)
                     setattr(ps, attr, max(0.0, min(1.0, current + delta)))
 
+        # ── Opening guidance: first turn orientation ──
+        if state.round == 0:
+            char_names = "、".join(c.name for c in state.characters)
+            scene_names = "、".join(state.available_scenes[:3])
+            yield {
+                "type": "event",
+                "text": (
+                    f"在场的有{char_names}。"
+                    f"你可以前往{scene_names}等地点进行调查，"
+                    f"也可以直接和在场的人对话。"
+                ),
+            }
+
         # ── Ambient hints: sounds from adjacent rooms ──
         for npc_act in visible_npc_actions:
             if not npc_act.visible_to_player and npc_act.sound_generated:
                 yield {
                     "type": "ambient_hint",
                     "text": f"你隐约听到{npc_act.location}方向传来{npc_act.sound_generated}……",
+                }
+
+        # ── Dramatic NPC events: full-screen cinematic moments ──
+        for npc_act in visible_npc_actions:
+            if npc_act.dramatic and npc_act.dramatic_text and npc_act.visible_to_player:
+                ps = self.psychology.get_state(session_id, npc_act.character_id)
+                yield {
+                    "type": "dramatic_event",
+                    "character": npc_act.character_name,
+                    "character_id": npc_act.character_id,
+                    "text": npc_act.dramatic_text,
+                    "mood": _compute_mood(ps),
                 }
 
         # ── Generate fallback narration and yield immediately ──
@@ -1960,6 +2131,43 @@ class TurnEngine:
                     and action_result.narration != fallback_narration):
                 yield {"type": "narration_update", "text": action_result.narration}
 
+            # ── Action cost check ──
+            action_cat = action_result.action_category
+            if not self.action_cost_system.can_afford(state.action_points, action_cat):
+                blocked_msg = self.action_cost_system.get_blocked_message(action_cat)
+                yield {"type": "action_blocked", "text": blocked_msg}
+                yield {"type": "state", "round": state.round, "phase": state.phase,
+                       "tension": state.tension, "scene": state.scene,
+                       "game_over": False, "game_state": redact_game_state(state)}
+                yield {"type": "done"}
+                return
+            state.action_points = self.action_cost_system.spend(state.action_points, action_cat)
+
+            # ── Evidence confrontation detection (use pre-NPC-autonomy snapshot) ──
+            confrontation = self.confrontation_system.detect_confrontation(
+                session_id, player_action, discovered_clue_ids, present_char_ids_at_turn_start,
+            )
+            if confrontation:
+                # Fill evidence text from clue
+                for clue in state.clues:
+                    if clue.id == confrontation.evidence_clue_id and clue.discovered:
+                        confrontation.evidence_text = clue.text
+                        break
+                state.confrontation_state = confrontation
+                yield {
+                    "type": "confrontation",
+                    "prompt": confrontation.prompt,
+                    "character": confrontation.target_character_name,
+                    "character_id": confrontation.target_character_id,
+                    "evidence_text": confrontation.evidence_text,
+                    "options": [{"id": o.id, "label": o.label, "kind": o.kind} for o in confrontation.options],
+                }
+                yield {"type": "state", "round": state.round, "phase": state.phase,
+                       "tension": state.tension, "scene": state.scene,
+                       "game_over": False, "game_state": redact_game_state(state)}
+                yield {"type": "done"}
+                return
+
             # ── Movement handling ──
             def _try_move() -> bool:
                 for target in action_result.targets:
@@ -1980,10 +2188,15 @@ class TurnEngine:
                             return True
                 return False
 
+            prev_scene = state.scene
             if action_result.action_category == "move" and action_result.feasible:
                 _try_move()
             elif action_result.feasible:
                 _try_move()
+
+            # Record movement in notebook
+            if state.scene != prev_scene:
+                self.notebook.record_movement(session_id, state.round + 1, state.scene)
 
             legacy_intent = action_result.legacy_intent
 
@@ -2307,6 +2520,21 @@ class TurnEngine:
             )
             self.truth_resolver.try_lock(session_id, state.round)
 
+            # ── Truth hint: signal to player that their investigation matters ──
+            weight_info = self.truth_resolver.get_weight_delta(session_id)
+            if weight_info.get("just_locked"):
+                yield {
+                    "type": "truth_hint",
+                    "text": "真相的轮廓在你的调查中逐渐清晰了……",
+                    "intensity": "strong",
+                }
+            elif weight_info.get("top_weight_delta", 0) > 0.3:
+                yield {
+                    "type": "truth_hint",
+                    "text": "你的调查方向正在影响事件的走向……",
+                    "intensity": "subtle",
+                }
+
             caught_lies = []
             if new_clue_ids:
                 caught_lies = self.lie_detector.check_for_contradictions(
@@ -2334,6 +2562,11 @@ class TurnEngine:
                     character_id=reply.character_id, text=reply.text,
                 )
                 self.lie_detector.record_npc_response(
+                    session_id, state.round,
+                    reply.character_id, reply.character_name, reply.text,
+                )
+                # Record NPC statement in notebook
+                self.notebook.record_statement(
                     session_id, state.round,
                     reply.character_id, reply.character_name, reply.text,
                 )
@@ -2368,11 +2601,24 @@ class TurnEngine:
                 state.events.append(Event(round=state.round, type="proactive", text=line.text))
 
             for lie in caught_lies:
-                yield {"type": "event", "text": lie.confrontation_text}
+                yield {
+                    "type": "lie_caught",
+                    "character": lie.character_name,
+                    "character_id": lie.character_id,
+                    "original_claim": lie.original_claim,
+                    "text": lie.confrontation_text,
+                }
                 state.events.append(Event(
                     round=state.round, type="lie_caught",
                     text=f"[揭穿谎言] {lie.character_name}: {lie.confrontation_text[:100]}",
                 ))
+                # Record contradiction in notebook
+                self.notebook.record_contradiction(
+                    session_id, state.round,
+                    lie.character_id, lie.character_name,
+                    lie.original_claim, lie.claim_round,
+                    lie.confrontation_text[:80],
+                )
 
             for evt_text in dm_directive.approved_events:
                 if not evt_text or not any('\u4e00' <= c <= '\u9fff' for c in evt_text):
@@ -2394,7 +2640,10 @@ class TurnEngine:
                 session_id, state.scene
             )
             for evidence in location_evidence:
-                yield {"type": "event", "text": f"你注意到：{evidence}"}
+                yield {"type": "npc_action", "text": f"你注意到：{evidence}"}
+                self.notebook.record_event(
+                    session_id, state.round, f"发现痕迹：{evidence}", ["evidence"],
+                )
 
             secret_evidence = self.secret_conversations.get_evidence_at_location(
                 session_id, state.scene
@@ -2405,8 +2654,23 @@ class TurnEngine:
                     round=state.round, type="secret_evidence", text=evidence,
                 ))
 
-            for clue_text in new_clue_texts:
-                yield {"type": "clue", "text": clue_text}
+            for i, clue_text in enumerate(new_clue_texts):
+                # Dramatic lead-in before the clue content
+                clue_id = new_clue_ids[i] if i < len(new_clue_ids) else ""
+                clue_obj = next((c for c in state.clues if c.id == clue_id), None)
+                clue_location = clue_obj.location if clue_obj else current_scene_short
+
+                yield {
+                    "type": "clue_discovery",
+                    "text": clue_text,
+                    "location": clue_location,
+                    "layer": 3 if clue_id.startswith("clue_L3") else 2 if clue_id.startswith("clue_L2") else 1,
+                }
+
+                # Record in notebook
+                self.notebook.record_clue(
+                    session_id, state.round, clue_text, clue_location,
+                )
 
             # End conditions
             game_over = False
@@ -2460,20 +2724,45 @@ class TurnEngine:
                     confrontations_won=len(caught_lies),
                     game_over_reason="deduction" if legacy_intent == "accuse" else "timeout" if state.round >= state.max_rounds else "chaos",
                 )
-                score_text = (
-                    f"\n\n{'─'*30}\n"
-                    f"结局维度: 真相={truth_level} 立场={moral_stance} 关系={relationship}\n"
-                    f"侦探评分: {score.total_score}/100 — {score.rank}级 ({score.rank_title})\n"
-                    f"  线索收集: {score.clue_score}/40\n"
-                    f"  推理质量: {score.deduction_score}/30\n"
-                    f"  调查效率: {score.efficiency_score}/15\n"
-                    f"  审讯互动: {score.interaction_score}/15\n"
-                    f"{'─'*30}\n"
-                    f"{score.summary}"
-                )
-                ending = (ending or "") + score_text
                 state.ending = ending
+
+                # ── Truth Replay: chronological playback ──
+                for i, step in enumerate(state.truth.hidden_chain):
+                    yield {
+                        "type": "truth_replay",
+                        "step": i + 1,
+                        "total": len(state.truth.hidden_chain),
+                        "text": step,
+                    }
+
                 yield {"type": "ending", "text": ending}
+
+                # ── NPC Afterwords: characters speak honestly ──
+                for char in state.characters:
+                    afterword = self._build_npc_afterword(char, truth_level, state)
+                    if afterword:
+                        yield {
+                            "type": "afterword",
+                            "character": char.name,
+                            "character_id": char.id,
+                            "text": afterword,
+                        }
+
+                # ── Score Card: separate visual event ──
+                yield {
+                    "type": "score_card",
+                    "total_score": score.total_score,
+                    "rank": score.rank,
+                    "rank_title": score.rank_title,
+                    "clue_score": score.clue_score,
+                    "deduction_score": score.deduction_score,
+                    "efficiency_score": score.efficiency_score,
+                    "interaction_score": score.interaction_score,
+                    "summary": score.summary,
+                    "truth_level": truth_level,
+                    "moral_stance": moral_stance,
+                    "relationship": relationship,
+                }
 
             self._update_pacing_state(
                 session_id,
@@ -2507,6 +2796,53 @@ class TurnEngine:
             if provider_overridden:
                 self.dm.config.provider = original_dm_provider
                 self.story_architect.config.provider = original_arch_provider
+
+    def _build_npc_afterword(
+        self, char, truth_level: str, state: GameState
+    ) -> str:
+        """Generate an honest afterword from an NPC after the game ends."""
+        trust = char.trust_to_player
+
+        if "委托" in char.secret or "自导自演" in char.secret or "共谋" in char.secret:
+            # Accomplice character
+            if truth_level in ("A", "B"):
+                return (
+                    f"{char.name}放下了一切伪装，轻声说："
+                    f"「你看穿了一切。说实话……我松了一口气。"
+                    f"隐瞒真相比你想象的要累得多。」"
+                )
+            else:
+                return (
+                    f"{char.name}看着你，欲言又止："
+                    f"「也许有一天你会明白我为什么这么做。」"
+                )
+        elif "争吵" in char.secret or "吵" in char.secret:
+            # Character with argument secret
+            if trust >= 50:
+                return (
+                    f"{char.name}苦笑了一下："
+                    f"「我承认我昨晚失控了。但我没有害他。"
+                    f"我只是……不想失去这段关系。」"
+                )
+            else:
+                return (
+                    f"{char.name}别过脸去："
+                    f"「你不会理解的。有些事情……不是对错能解释的。」"
+                )
+        else:
+            # Outsider character
+            if truth_level == "A":
+                return (
+                    f"{char.name}合上了笔记本："
+                    f"「你是我见过最出色的调查者。"
+                    f"这个故事——我会如实记录。」"
+                )
+            else:
+                return (
+                    f"{char.name}推了推眼镜："
+                    f"「这个夜晚还有很多没有被写出来的故事。"
+                    f"也许我们都只看到了真相的一角。」"
+                )
 
     def _turn_response_to_events(self, result: TurnResponse):
         """Convert a TurnResponse into a list of SSE event dicts."""

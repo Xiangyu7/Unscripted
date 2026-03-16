@@ -55,6 +55,8 @@ class NPCAction(BaseModel):
     evidence_left: Optional[str] = None  # Evidence of the action (footprints, moved objects, etc.)
     sound_generated: Optional[str] = None  # Sound that could be heard from adjacent rooms
     world_changes: List[Dict] = Field(default_factory=list)  # Changes to world state
+    dramatic: bool = False               # High-impact cinematic event?
+    dramatic_text: str = ""              # Full-screen dramatic narration text
 
 
 class NPCAutonomyState(BaseModel):
@@ -223,6 +225,8 @@ _LINLAN_ACTIONS: Dict[str, List[Dict[str, Any]]] = {
             "location": "酒窖",
             "sound_generated": "远处传来三声沉闷的敲门声",
             "evidence_left": "酒窖门上有新的指痕",
+            "dramatic": True,
+            "dramatic_text": "林岚站在酒窖门前，整个人像一尊雕像。她的手悬在空中，犹豫了很久，最终叩响了三下。每一声都像敲在心上。门后传来一阵模糊的回应——酒窖的另一边，有人在等她。",
         },
         {
             "action": "林岚从酒窖匆匆返回，裙角沾了点灰，她不自然地拍了拍。",
@@ -283,6 +287,8 @@ _LINLAN_ACTIONS: Dict[str, List[Dict[str, Any]]] = {
             "sound_generated": "酒窖方向传来两声沉闷的拍门声和急促的低语",
             "evidence_left": "酒窖门上留下了掌印",
             "world_changes": [{"type": "event", "description": "林岚试图联系酒窖里的人"}],
+            "dramatic": True,
+            "dramatic_text": "林岚突然起身，面色苍白地冲向酒窖方向。她的高跟鞋在走廊里敲出急促的节拍。她在酒窖门前停下，用力拍了两下门，压低声音说了什么——然后迅速离开，仿佛身后有什么在追赶她。",
         },
         {
             "action": "林岚在花园角落，对着手机急促地说：「不能再拖了，他快发现了。」",
@@ -449,6 +455,8 @@ _ZHOUMU_ACTIONS: Dict[str, List[Dict[str, Any]]] = {
             "location": "走廊",
             "sound_generated": "酒窖方向传来急促的奔跑声和碰倒什么东西的声音",
             "evidence_left": "酒窖入口到走廊之间有慌张奔跑的鞋印",
+            "dramatic": True,
+            "dramatic_text": "周牧的脸色突然变得惨白。他猛地从酒窖深处冲出来，撞翻了一排酒瓶。玻璃碎裂声在寂静的走廊里回荡。他双手撑着墙壁，大口大口地喘气，像是见了鬼一样。",
         },
     ],
 
@@ -493,6 +501,8 @@ _ZHOUMU_ACTIONS: Dict[str, List[Dict[str, Any]]] = {
             "evidence_left": "走廊垃圾桶里有一个被撕开的信封",
             "sound_generated": "走廊里有人倒抽一口凉气",
             "world_changes": [{"type": "event", "description": "周牧打开了顾言留给他的信"}],
+            "dramatic": True,
+            "dramatic_text": "周牧的手指颤抖着撕开了那封他一直藏在内衣口袋里的信。他读了一遍，又读了一遍。然后他缓缓蹲下去，靠在墙上，信纸从手中滑落。他的肩膀开始剧烈地颤抖——不知道是在笑还是在哭。",
         },
         {
             "action": "周牧颤抖着打开信封，读了几行就把信揉成一团塞回口袋。",
@@ -703,6 +713,8 @@ _SONGZHI_ACTIONS: Dict[str, List[Dict[str, Any]]] = {
             "location": "走廊",
             "evidence_left": "林岚和宋知微在走廊里有过一次紧张的对峙",
             "sound_generated": "走廊里传来两个女人压低声音争论的声音",
+            "dramatic": True,
+            "dramatic_text": "宋知微拦住了林岚的去路。她举起手机，屏幕上的内容让林岚瞬间失去了所有表情。两人对峙着，空气几乎凝固。林岚低声说了一句什么，宋知微的笑容消失了——这一刻，两个女人之间的某种平衡被彻底打破。",
         },
         {
             "action": "宋知微假装不经意地提到了「遗嘱」两个字，同时紧盯着林岚的反应。",
@@ -734,6 +746,8 @@ _SONGZHI_ACTIONS: Dict[str, List[Dict[str, Any]]] = {
             "location": "宴会厅",
             "evidence_left": "吧台上有酒洒出来的痕迹",
             "sound_generated": "宴会厅传来杯子碰撞的声音",
+            "dramatic": True,
+            "dramatic_text": "宋知微举着酒杯，笑容不达眼底。她走到周牧面前，轻描淡写地说了一句话。周牧的酒杯从手中滑落，在吧台上弹了一下，红酒溅了一桌。整个宴会厅安静了一秒——所有人都看到了周牧脸上一闪而过的恐惧。",
         },
         {
             "action": "宋知微把一张照片递给周牧看，周牧看完后脸色大变。",
@@ -1399,6 +1413,8 @@ class NPCAutonomyAgent:
                 evidence_left=raw.get("evidence_left"),
                 sound_generated=raw.get("sound_generated"),
                 world_changes=raw.get("world_changes", []),
+                dramatic=raw.get("dramatic", False),
+                dramatic_text=raw.get("dramatic_text", ""),
             )
 
             # Update NPC location

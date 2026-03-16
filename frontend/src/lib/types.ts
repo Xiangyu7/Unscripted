@@ -62,6 +62,28 @@ export interface VoteState {
   outcome: string | null;
 }
 
+export interface CheckpointState {
+  status: string; // "idle" | "awaiting_hypothesis" | "resolved"
+  checkpoint_round: number;
+  prompt: string;
+  options: VoteOption[];
+  player_choice_id: string | null;
+  feedback: string | null;
+}
+
+export interface ConfrontationState {
+  status: string; // "idle" | "awaiting_player_choice" | "resolved"
+  target_character_id: string;
+  target_character_name: string;
+  evidence_clue_id: string;
+  evidence_text: string;
+  prompt: string;
+  options: VoteOption[];
+  player_choice_id: string | null;
+  outcome: string | null;
+  result_text: string | null;
+}
+
 export interface GameState {
   session_id: string;
   story_id?: string;
@@ -75,6 +97,10 @@ export interface GameState {
   knowledge: Knowledge;
   events: GameEvent[];
   vote_state?: VoteState | null;
+  checkpoint_state?: CheckpointState | null;
+  confrontation_state?: ConfrontationState | null;
+  action_points: number;
+  max_action_points: number;
   game_over: boolean;
   ending: string | null;
   max_rounds: number;
@@ -155,8 +181,43 @@ export interface SpeechSynthesisResponse {
 
 export interface FeedItem {
   id: string;
-  type: "system" | "director" | "player" | "npc" | "clue" | "event" | "ending" | "scene_image";
+  type:
+    | "system" | "director" | "player" | "npc" | "clue" | "event"
+    | "ending" | "scene_image"
+    | "truth_hint" | "dramatic_event"
+    | "truth_replay" | "afterword" | "score_card"
+    | "checkpoint" | "confrontation"
+    | "action_blocked";
   text: string;
   character?: string;
+  characterId?: string;
   imageUrl?: string;
+  intensity?: string;
+  mood?: string;
+  // truth_replay fields
+  step?: number;
+  totalSteps?: number;
+  // score_card fields
+  totalScore?: number;
+  rank?: string;
+  rankTitle?: string;
+  clueScore?: number;
+  deductionScore?: number;
+  efficiencyScore?: number;
+  interactionScore?: number;
+  // checkpoint / confrontation options
+  options?: VoteOption[];
+  prompt?: string;
+  evidenceText?: string;
+}
+
+export interface ScoreCardData {
+  total_score: number;
+  rank: string;
+  rank_title: string;
+  clue_score: number;
+  deduction_score: number;
+  efficiency_score: number;
+  interaction_score: number;
+  summary: string;
 }

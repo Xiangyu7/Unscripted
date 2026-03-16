@@ -17,6 +17,7 @@ function getApiUrl(): string {
 }
 
 const API_URL = getApiUrl();
+export { API_URL };
 
 export async function resetGame(): Promise<GameState> {
   const res = await fetch(`${API_URL}/api/reset`, {
@@ -75,6 +76,24 @@ export type StreamCallback = (event: {
   tension?: number;
   game_over?: boolean;
   game_state?: GameState;
+  // New event fields
+  intensity?: string;
+  mood?: string;
+  step?: number;
+  total?: number;
+  summary?: string;
+  total_score?: number;
+  rank?: string;
+  rank_title?: string;
+  clue_score?: number;
+  deduction_score?: number;
+  efficiency_score?: number;
+  interaction_score?: number;
+  prompt?: string;
+  options?: Array<{ id: string; label: string; kind: string }>;
+  evidence_text?: string;
+  outcome?: string;
+  choice_id?: string;
 }) => void;
 
 export async function submitTurnStream(

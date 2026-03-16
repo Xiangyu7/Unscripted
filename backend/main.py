@@ -30,11 +30,18 @@ from schemas.game_state import (
 )
 from services.speech_service import SpeechService, SpeechServiceError
 from stories.gu_family_case import create_initial_state
+from stories.case_builder import CaseBuilder
+from stories.generator import StoryGenerator
+from stories.templates import select_template
+from stories.validator import StoryValidator
 
 # Initialize config and engine
 config = Config()
 engine = TurnEngine(config)
 speech_service = SpeechService(config)
+story_generator = StoryGenerator(config)
+story_validator = StoryValidator()
+case_builder = CaseBuilder()
 
 
 @asynccontextmanager
@@ -88,6 +95,17 @@ class ResetResponse(BaseModel):
     session_id: str
     message: str
     game_state: dict
+
+
+class GenerateCaseRequest(BaseModel):
+    theme: str
+    template_id: Optional[str] = None
+
+
+class GenerateCaseResponse(BaseModel):
+    session_id: str
+    title: str
+    message: str
 
 
 class HealthResponse(BaseModel):
@@ -161,10 +179,13 @@ async def reset_session(req: ResetRequest = ResetRequest()):
 
     if req.story_id == "gu_family_case":
         state = create_initial_state(sid)
+    elif req.story_id in sessions and sessions[req.story_id].story_id.startswith("generated_"):
+        # Allow resetting a generated case by passing its session_id as story_id
+        state = sessions[req.story_id].model_copy(update={"session_id": sid, "round": 0, "tension": 20, "game_over": False, "ending": None})
     else:
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown story_id: '{req.story_id}'. Available: ['gu_family_case']",
+            detail=f"Unknown story_id: '{req.story_id}'. Available: ['gu_family_case'] or use /api/generate-case.",
         )
 
     sessions[sid] = state
@@ -174,6 +195,73 @@ async def reset_session(req: ResetRequest = ResetRequest()):
         message="Session created successfully.",
         game_state=redact_game_state(state),
     )
+
+
+@app.post("/api/generate-case", response_model=GenerateCaseResponse)
+async def generate_case(req: GenerateCaseRequest):
+    """Generate a new case from a user theme using template + LLM."""
+    if config.provider.value == "fallback":
+        raise HTTPException(
+            status_code=503,
+            detail="Story generation requires an LLM provider. Set LLM_API_KEY.",
+        )
+
+    # Select template
+    if req.template_id:
+        from stories.templates import TEMPLATE_REGISTRY
+
+        template = TEMPLATE_REGISTRY.get(req.template_id)
+        if not template:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown template_id: '{req.template_id}'. "
+                f"Available: {list(TEMPLATE_REGISTRY.keys())}",
+            )
+    else:
+        template = select_template(req.theme)
+
+    # Generate with retry
+    last_errors = []
+    for attempt in range(2):
+        try:
+            filled = await story_generator.generate(template, req.theme)
+        except Exception as e:
+            last_errors.append(f"LLM call failed: {e}")
+            continue
+
+        errors = story_validator.validate(template, filled)
+        if not errors:
+            break
+        last_errors = errors
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Story generation failed after 2 attempts: {last_errors}",
+        )
+
+    # Build GameState
+    sid = str(uuid.uuid4())
+    state = case_builder.build(template, filled, session_id=sid)
+    sessions[sid] = state
+    engine.init_world(sid)
+
+    return GenerateCaseResponse(
+        session_id=sid,
+        title=state.title,
+        message="Case generated successfully.",
+    )
+
+
+@app.get("/api/notebook/{session_id}")
+async def get_notebook(session_id: str):
+    """Get the player's investigation notebook for a session."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+    return {
+        "entries": engine.notebook.get_notebook(session_id),
+        "contradictions": engine.notebook.get_contradictions(session_id),
+        "summary": engine.notebook.get_summary(session_id),
+    }
 
 
 @app.get("/api/state/{session_id}")
@@ -186,6 +274,40 @@ async def get_state(session_id: str):
             detail=f"Session '{session_id}' not found.",
         )
     return redact_game_state(state)
+
+
+@app.get("/api/report/{session_id}")
+async def get_report(session_id: str):
+    """Get the case report for a completed game session."""
+    state = sessions.get(session_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+
+    discovered_clues = [
+        {"id": c.id, "text": c.text, "location": c.location}
+        for c in state.clues if c.discovered
+    ]
+    key_events = [
+        {"round": e.round, "type": e.type, "text": e.text}
+        for e in state.events
+        if e.type in ("lie_caught", "twist", "proactive", "accuse", "confrontation")
+    ]
+    return {
+        "session_id": session_id,
+        "title": state.title,
+        "game_over": state.game_over,
+        "ending": state.ending,
+        "round": state.round,
+        "max_rounds": state.max_rounds,
+        "tension": state.tension,
+        "discovered_clues": discovered_clues,
+        "total_clues": len(state.clues),
+        "key_events": key_events,
+        "characters": [
+            {"id": c.id, "name": c.name, "trust": c.trust_to_player, "suspicion": c.suspicion}
+            for c in state.characters
+        ],
+    }
 
 
 @app.post("/api/turn", response_model=TurnResponse)

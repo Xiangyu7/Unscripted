@@ -12,6 +12,7 @@ import {
   submitTurnStream,
   submitVoiceTurn,
   synthesizeSpeech,
+  API_URL,
 } from "@/lib/api";
 import GameBoard from "@/components/GameBoard";
 import StoryFeed from "@/components/StoryFeed";
@@ -21,6 +22,7 @@ import WorldLedger from "@/components/WorldLedger";
 import QuickActions from "@/components/QuickActions";
 import DetectiveNotebook from "@/components/DetectiveNotebook";
 import LocationMap from "@/components/LocationMap";
+import CaseReport from "@/components/CaseReport";
 import {
   FeedItem,
   GameState,
@@ -223,6 +225,8 @@ export default function HomePage() {
   const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [caseReportData, setCaseReportData] = useState<any>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isVoiceSubmitting, setIsVoiceSubmitting] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatusResponse | null>(null);
@@ -237,12 +241,17 @@ export default function HomePage() {
 
   const voteState = gameState?.vote_state ?? null;
   const isAwaitingVote = voteState?.status === "awaiting_player_vote";
+  const checkpointState = gameState?.checkpoint_state ?? null;
+  const isAwaitingCheckpoint = checkpointState?.status === "awaiting_hypothesis";
+  const confrontationState = gameState?.confrontation_state ?? null;
+  const isAwaitingConfrontation = confrontationState?.status === "awaiting_player_choice";
+  const isInteractiveBlocked = isAwaitingVote || isAwaitingCheckpoint || isAwaitingConfrontation;
   const isBusy = isLoading || isVoiceSubmitting;
   const canUseVoiceInput =
     !!voiceStatus?.asr.available &&
     !!gameState &&
     !gameState.game_over &&
-    !isAwaitingVote &&
+    !isInteractiveBlocked &&
     !isBusy;
 
   // Memoize characters with mood-aware portrait URLs
@@ -601,6 +610,108 @@ export default function HomePage() {
                   addFeedItems([{ id: nextFeedId(), type: "ending", text: event.text }]);
                 }
                 break;
+              case "truth_hint":
+                if (event.text) {
+                  addFeedItems([{
+                    id: nextFeedId(), type: "truth_hint", text: event.text,
+                    intensity: event.intensity,
+                  }]);
+                }
+                break;
+              case "dramatic_event":
+                if (event.text) {
+                  addFeedItems([{
+                    id: nextFeedId(), type: "dramatic_event", text: event.text,
+                    character: event.character, characterId: event.character_id,
+                    mood: event.mood,
+                  }]);
+                }
+                break;
+              case "truth_replay":
+                if (event.text) {
+                  addFeedItems([{
+                    id: nextFeedId(), type: "truth_replay", text: event.text,
+                    step: event.step, totalSteps: event.total,
+                  }]);
+                }
+                break;
+              case "afterword":
+                if (event.text) {
+                  addFeedItems([{
+                    id: nextFeedId(), type: "afterword", text: event.text,
+                    character: event.character, characterId: event.character_id,
+                  }]);
+                }
+                break;
+              case "score_card":
+                addFeedItems([{
+                  id: nextFeedId(), type: "score_card",
+                  text: event.summary || "",
+                  totalScore: event.total_score,
+                  rank: event.rank,
+                  rankTitle: event.rank_title,
+                  clueScore: event.clue_score,
+                  deductionScore: event.deduction_score,
+                  efficiencyScore: event.efficiency_score,
+                  interactionScore: event.interaction_score,
+                }]);
+                break;
+              case "checkpoint":
+                if (event.prompt) {
+                  addFeedItems([{
+                    id: nextFeedId(), type: "checkpoint",
+                    text: event.prompt,
+                    prompt: event.prompt,
+                    options: event.options,
+                  }]);
+                }
+                break;
+              case "checkpoint_feedback":
+                if (event.text) {
+                  addFeedItems([{ id: nextFeedId(), type: "director", text: event.text }]);
+                }
+                break;
+              case "confrontation":
+                if (event.prompt) {
+                  addFeedItems([{
+                    id: nextFeedId(), type: "confrontation",
+                    text: event.prompt,
+                    prompt: event.prompt,
+                    character: event.character,
+                    characterId: event.character_id,
+                    evidenceText: event.evidence_text,
+                    options: event.options,
+                  }]);
+                }
+                break;
+              case "confrontation_result":
+                if (event.text) {
+                  addFeedItems([{
+                    id: nextFeedId(), type: "npc", text: event.text,
+                    character: event.character,
+                  }]);
+                }
+                break;
+              case "action_blocked":
+                if (event.text) {
+                  addFeedItems([{ id: nextFeedId(), type: "action_blocked", text: event.text }]);
+                }
+                break;
+              case "clue_discovery":
+                if (event.text) {
+                  addFeedItems([{ id: nextFeedId(), type: "clue", text: event.text }]);
+                }
+                break;
+              case "lie_caught":
+                if (event.text) {
+                  addFeedItems([{ id: nextFeedId(), type: "event", text: event.text }]);
+                }
+                break;
+              case "npc_action":
+                if (event.text) {
+                  addFeedItems([{ id: nextFeedId(), type: "event", text: event.text }]);
+                }
+                break;
               case "state":
                 // Update game state from streamed data
                 if (event.game_state && typeof event.game_state === "object" && "session_id" in (event.game_state as unknown as Record<string, unknown>)) {
@@ -774,6 +885,8 @@ export default function HomePage() {
           cluesFound={gameState?.clues?.filter((c) => c.discovered).length || 0}
           totalClues={gameState?.clues?.length || 0}
           tension={gameState?.tension || 0}
+          actionPoints={gameState?.action_points ?? 2}
+          maxActionPoints={gameState?.max_action_points ?? 2}
           onReset={handleReset}
           isLoading={isBusy}
         />
@@ -787,17 +900,74 @@ export default function HomePage() {
             {gameState?.game_over ? (
               <div className="p-4 text-center">
                 <p className="text-amber-400 text-sm mb-3">游戏结束</p>
-                <button
-                  onClick={handleReset}
-                  className="btn-transition px-6 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-sm font-medium"
-                >
-                  重新开始
-                </button>
+                <div className="flex items-center justify-center gap-3">
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await fetch(`${API_URL}/api/report/${gameState.session_id}`);
+                        if (res.ok) {
+                          const data = await res.json();
+                          setCaseReportData(data);
+                        }
+                      } catch { /* ignore */ }
+                    }}
+                    className="btn-transition px-6 py-2 bg-slate-700 hover:bg-slate-600 text-amber-300 rounded-lg text-sm font-medium border border-amber-700/40"
+                  >
+                    查看侦探档案
+                  </button>
+                  <button
+                    onClick={handleReset}
+                    className="btn-transition px-6 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-sm font-medium"
+                  >
+                    重新开始
+                  </button>
+                </div>
               </div>
             ) : (
               <>
                 <div className="px-4 pt-4 pb-1">
-                  {isAwaitingVote ? (
+                  {isAwaitingCheckpoint ? (
+                    <div className="rounded-lg border border-indigo-700/40 bg-indigo-950/20 p-3">
+                      <p className="text-sm text-indigo-100 font-medium">
+                        {checkpointState?.prompt || "选择你的假说："}
+                      </p>
+                      <div className="mt-3 flex flex-col gap-2">
+                        {checkpointState?.options.map((option) => (
+                          <button
+                            key={option.id}
+                            onClick={() => handleSubmitAction(option.id)}
+                            disabled={isBusy}
+                            className="btn-transition rounded-lg border border-indigo-600/50 px-4 py-2.5 text-sm text-indigo-200 hover:bg-indigo-900/30 text-left disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : isAwaitingConfrontation ? (
+                    <div className="rounded-lg border border-red-700/40 bg-red-950/20 p-3">
+                      <p className="text-sm text-red-100 font-medium">
+                        {confrontationState?.prompt || "选择你的追问方式："}
+                      </p>
+                      {confrontationState?.evidence_text && (
+                        <p className="text-xs text-amber-300/60 mt-1 italic">
+                          证据: {confrontationState.evidence_text}
+                        </p>
+                      )}
+                      <div className="mt-3 flex flex-col gap-2">
+                        {confrontationState?.options.map((option) => (
+                          <button
+                            key={option.id}
+                            onClick={() => handleSubmitAction(option.id)}
+                            disabled={isBusy}
+                            className="btn-transition rounded-lg border border-red-600/50 px-4 py-2.5 text-sm text-red-200 hover:bg-red-900/30 text-left disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : isAwaitingVote ? (
                     <div className="rounded-lg border border-amber-700/40 bg-amber-950/20 p-3">
                       <p className="text-sm text-amber-100">
                         {voteState?.prompt || "公开对峙已经开始，给出你的最终判断。"}
@@ -889,19 +1059,19 @@ export default function HomePage() {
                     value={inputValue}
                     onChange={(e) => setInputValue(e.target.value)}
                     placeholder={
-                      isAwaitingVote
-                        ? "请直接点击上方投票按钮"
+                      isInteractiveBlocked
+                        ? "请选择上方的选项"
                         : isRecording
                           ? "录音中..."
                           : "输入你的行动..."
                     }
-                    disabled={isBusy || !gameState || isAwaitingVote || isRecording}
+                    disabled={isBusy || !gameState || isInteractiveBlocked || isRecording}
                     className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 disabled:opacity-50 disabled:cursor-not-allowed focus:border-amber-600/50"
                   />
                   <button
                     type="submit"
                     disabled={
-                      isBusy || !inputValue.trim() || !gameState || isAwaitingVote || isRecording
+                      isBusy || !inputValue.trim() || !gameState || isInteractiveBlocked || isRecording
                     }
                     className="btn-transition shrink-0 px-5 py-2.5 bg-amber-600 hover:bg-amber-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg text-sm font-medium disabled:cursor-not-allowed"
                   >
@@ -917,7 +1087,7 @@ export default function HomePage() {
                   </button>
                 </form>
 
-                {!isAwaitingVote && (
+                {!isInteractiveBlocked && (
                   <QuickActions
                     onAction={handleQuickAction}
                     disabled={isBusy || !gameState || isRecording}
@@ -993,6 +1163,14 @@ export default function HomePage() {
           </div>
         </div>
       </div>
+
+      {/* Case Report Modal */}
+      {caseReportData && (
+        <CaseReport
+          data={caseReportData}
+          onClose={() => setCaseReportData(null)}
+        />
+      )}
     </div>
   );
 }

@@ -92,6 +92,30 @@ class VoteState(BaseModel):
     outcome: Optional[str] = None
 
 
+class CheckpointState(BaseModel):
+    """Reasoning checkpoint state (triggered at rounds 6 and 12)."""
+    status: str = "idle"  # "idle" | "awaiting_hypothesis" | "resolved"
+    checkpoint_round: int = 0
+    prompt: str = ""
+    options: List[VoteOption] = Field(default_factory=list)
+    player_choice_id: Optional[str] = None
+    feedback: Optional[str] = None
+
+
+class ConfrontationState(BaseModel):
+    """Evidence confrontation state (clue + character → pressure options)."""
+    status: str = "idle"  # "idle" | "awaiting_player_choice" | "resolved"
+    target_character_id: str = ""
+    target_character_name: str = ""
+    evidence_clue_id: str = ""
+    evidence_text: str = ""
+    prompt: str = ""
+    options: List[VoteOption] = Field(default_factory=list)
+    player_choice_id: Optional[str] = None
+    outcome: Optional[str] = None
+    result_text: Optional[str] = None
+
+
 class StoryTruth(BaseModel):
     core_truth: str
     culprit: Optional[str] = None
@@ -144,6 +168,11 @@ class GameState(BaseModel):
         default_factory=lambda: ["宴会厅", "书房", "花园", "酒窖", "走廊"]
     )
     vote_state: Optional[VoteState] = None
+    checkpoint_state: Optional[CheckpointState] = None
+    confrontation_state: Optional[ConfrontationState] = None
+    checkpoints_completed: List[int] = Field(default_factory=list)
+    action_points: int = Field(default=2)
+    max_action_points: int = Field(default=2)
     game_over: bool = False
     ending: Optional[str] = None
     max_rounds: int = 20
@@ -264,6 +293,7 @@ def redact_game_state(state: GameState) -> dict:
     # Strip internal tracking fields — not for the frontend
     state_dict.pop("behavior_tags", None)
     state_dict.pop("key_choices", None)
+    state_dict.pop("checkpoints_completed", None)
     state_dict["truth"] = {
         "core_truth": "[REDACTED]",
         "culprit": state.truth.culprit,

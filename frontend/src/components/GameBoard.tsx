@@ -11,6 +11,8 @@ interface GameBoardProps {
   tension: number;
   cluesFound: number;
   totalClues: number;
+  actionPoints: number;
+  maxActionPoints: number;
   onReset: () => void;
   isLoading: boolean;
 }
@@ -24,6 +26,8 @@ export default function GameBoard({
   tension,
   cluesFound,
   totalClues,
+  actionPoints,
+  maxActionPoints,
   onReset,
   isLoading,
 }: GameBoardProps) {
@@ -99,6 +103,25 @@ export default function GameBoard({
                 style={{ width: `${progressPct}%` }}
               />
             </div>
+          </span>
+
+          <span className="hidden sm:inline text-slate-600">|</span>
+
+          {/* Action points */}
+          <span className="inline-flex items-center gap-1">
+            <span className="text-cyan-400 text-xs">行动力</span>
+            <span className="inline-flex gap-0.5">
+              {Array.from({ length: maxActionPoints }).map((_, i) => (
+                <span
+                  key={i}
+                  className={`inline-block w-2.5 h-2.5 rounded-full border transition-all duration-300 ${
+                    i < actionPoints
+                      ? "bg-cyan-400 border-cyan-400"
+                      : "bg-transparent border-slate-600"
+                  }`}
+                />
+              ))}
+            </span>
           </span>
         </div>
       </div>

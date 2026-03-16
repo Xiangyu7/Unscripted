@@ -48,6 +48,9 @@ class TruthState(BaseModel):
     truth_weights: Dict[str, float] = Field(default_factory=dict)  # truth_id → weight
     locked_truth_id: Optional[str] = None  # Once locked, this is THE answer
     lock_round: Optional[int] = None
+    # Track weight changes per turn for truth_hint events
+    previous_weights: Dict[str, float] = Field(default_factory=dict)
+    just_locked: bool = False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -256,6 +259,10 @@ class TruthResolver:
         if state.locked_truth_id:
             return  # Already locked
 
+        # Snapshot weights before this update (for delta tracking)
+        state.previous_weights = dict(state.truth_weights)
+        state.just_locked = False
+
         action_lower = player_action.lower()
 
         for truth_id in state.possible_truths:
@@ -316,6 +323,7 @@ class TruthResolver:
 
             state.locked_truth_id = top_id
             state.lock_round = round_num
+            state.just_locked = True
             return top_id
 
         return None
@@ -344,6 +352,25 @@ class TruthResolver:
         if quality == "perfect":
             return truth.perfect_ending
         return truth.good_ending
+
+    def get_weight_delta(self, session_id: str) -> dict:
+        """Get weight change info for truth_hint events."""
+        state = self.get_state(session_id)
+        if not state.previous_weights:
+            return {"just_locked": False, "top_weight_delta": 0.0}
+
+        # Calculate the maximum single-truth weight change
+        max_delta = 0.0
+        for tid, current_w in state.truth_weights.items():
+            prev_w = state.previous_weights.get(tid, current_w)
+            delta = abs(current_w - prev_w)
+            if delta > max_delta:
+                max_delta = delta
+
+        return {
+            "just_locked": state.just_locked,
+            "top_weight_delta": max_delta,
+        }
 
     def get_debug_info(self, session_id: str) -> dict:
         """For debugging: show all truth weights."""
