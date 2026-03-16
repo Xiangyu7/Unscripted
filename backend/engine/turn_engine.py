@@ -1433,16 +1433,12 @@ class TurnEngine:
             if tell_ctx:
                 parts.append(tell_ctx)
 
-            # Memory context — let NPC reference past conversations
-            history = self.continuity.get_character_history(session_id, char.id)
-            if history:
-                memory_ctx = build_memory_context(
-                    char.id, char.name,
-                    [{"round": h.round, "statement": h.statement} for h in history],
-                    [e.text for e in state.events if "玩家" in e.text][-10:],
-                )
-                if memory_ctx:
-                    parts.append(memory_ctx)
+            # Memory context — smart layered memory (key statements never forgotten)
+            smart_mem = self.continuity.get_smart_memory(
+                session_id, char.id, player_action
+            )
+            if smart_mem:
+                parts.append(smart_mem)
             if char.id in action_result.npc_reactions:
                 parts.append(f"【对玩家行为的反应提示】\n{action_result.npc_reactions[char.id]}")
             # DM mood instruction
@@ -2196,15 +2192,12 @@ class TurnEngine:
                 )
                 if tell_ctx:
                     parts.append(tell_ctx)
-                history = self.continuity.get_character_history(session_id, char.id)
-                if history:
-                    memory_ctx = build_memory_context(
-                        char.id, char.name,
-                        [{"round": h.round, "statement": h.statement} for h in history],
-                        [e.text for e in state.events if "玩家" in e.text][-10:],
-                    )
-                    if memory_ctx:
-                        parts.append(memory_ctx)
+                # Memory context — smart layered memory
+                smart_mem = self.continuity.get_smart_memory(
+                    session_id, char.id, player_action
+                )
+                if smart_mem:
+                    parts.append(smart_mem)
                 if char.id in action_result.npc_reactions:
                     parts.append(f"【对玩家行为的反应提示】\n{action_result.npc_reactions[char.id]}")
                 parts.append(f"【本轮氛围】{dm_directive.turn_mood}")

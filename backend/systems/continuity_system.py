@@ -24,6 +24,7 @@ class NarrativeStatement(BaseModel):
     statement: str     # The raw text that was said
     topics: List[str] = Field(default_factory=list)   # Key topics mentioned
     claims: List[str] = Field(default_factory=list)    # Factual claims made
+    is_key: bool = False  # Key statements (denials, admissions, emotions) are never forgotten
 
 
 class ContinuityState(BaseModel):
@@ -33,6 +34,10 @@ class ContinuityState(BaseModel):
     character_claims: Dict[str, List[str]] = Field(default_factory=dict)
     revealed_info: Dict[str, List[str]] = Field(default_factory=dict)
     contradiction_log: List[str] = Field(default_factory=list)
+    # Compressed summaries of older conversation rounds per character
+    character_summaries: Dict[str, str] = Field(default_factory=dict)
+    # Round number up to which summaries have been generated
+    summarized_up_to: Dict[str, int] = Field(default_factory=dict)
 
 
 # ─── Contradiction detection patterns ──────────────────────────────────
@@ -103,6 +108,80 @@ def _subject_overlap(subject: str, text: str) -> bool:
     return False
 
 
+# ─── Key statement detection ──────────────────────────────────────────
+
+# Patterns that indicate a statement should NEVER be forgotten
+_KEY_DENIAL_RE = re.compile(r"不知道|没见过|没有见|不在|没去过|不认识|没听说")
+_KEY_ADMISSION_RE = re.compile(r"好吧|实话说|坦白|承认|其实|说实话|告诉你|不瞒你")
+_KEY_EMOTION_RE = re.compile(r"[！!]{1,}|你到底|闭嘴|别问了|够了|住嘴|滚|放过我")
+_KEY_REVEAL_RE = re.compile(r"秘密|遗嘱|密室|酒窖|争吵|失踪|计划|真相")
+
+
+def _is_key_statement(text: str) -> bool:
+    """Detect whether a statement is important enough to never forget."""
+    if _KEY_DENIAL_RE.search(text):
+        return True
+    if _KEY_ADMISSION_RE.search(text):
+        return True
+    if _KEY_EMOTION_RE.search(text):
+        return True
+    if _KEY_REVEAL_RE.search(text):
+        return True
+    # Long statements (>60 chars) are usually more substantial
+    if len(text) > 80:
+        return True
+    return False
+
+
+def _extract_topic_keywords(text: str) -> List[str]:
+    """Extract topic keywords for matching against player actions."""
+    keywords = []
+    topic_patterns = [
+        "顾言", "林岚", "周牧", "宋知微", "赵伯",
+        "遗嘱", "遗产", "失踪", "争吵", "秘密", "计划",
+        "书房", "酒窖", "花园", "走廊", "宴会厅",
+        "手机", "电话", "消息", "纸条", "信",
+        "脚印", "划痕", "密室", "钥匙",
+    ]
+    for kw in topic_patterns:
+        if kw in text:
+            keywords.append(kw)
+    return keywords
+
+
+def _build_summary_from_statements(statements: List[NarrativeStatement], char_name: str) -> str:
+    """Compress a list of older statements into a brief summary."""
+    if not statements:
+        return ""
+
+    topics_mentioned: Dict[str, int] = defaultdict(int)
+    denials = []
+    reveals = []
+
+    for s in statements:
+        for topic in s.topics:
+            topics_mentioned[topic] += 1
+        if _KEY_DENIAL_RE.search(s.statement):
+            # Extract what was denied
+            m = re.search(r"不知道(.+?)(?:[。，,\s]|$)", s.statement)
+            if m:
+                denials.append(f"第{s.round}轮否认知道「{m.group(1).strip()[:10]}」")
+        if _KEY_ADMISSION_RE.search(s.statement):
+            reveals.append(f"第{s.round}轮透露了一些信息")
+
+    parts = []
+    if topics_mentioned:
+        top_topics = sorted(topics_mentioned.items(), key=lambda x: -x[1])[:5]
+        topic_str = "、".join(t[0] for t in top_topics)
+        parts.append(f"{char_name}之前的对话主要涉及：{topic_str}")
+    if denials:
+        parts.append(f"重要否认：{'; '.join(denials[:3])}")
+    if reveals:
+        parts.append(f"曾经松口：{'; '.join(reveals[:3])}")
+
+    return "。".join(parts)
+
+
 # ─── ContinuityGuardian ────────────────────────────────────────────────
 
 class ContinuityGuardian:
@@ -161,8 +240,22 @@ class ContinuityGuardian:
             statement=text,
             topics=topics,
             claims=claims,
+            is_key=_is_key_statement(text),
         )
         state.statements.append(stmt)
+
+        # Auto-summarize when a character has many old statements
+        char_stmts = [s for s in state.statements if s.character_id == character_id]
+        summarized_round = state.summarized_up_to.get(character_id, 0)
+        if len(char_stmts) > 8:
+            # Summarize everything older than the last 5 statements
+            cutoff = char_stmts[-5].round
+            if cutoff > summarized_round:
+                old_stmts = [s for s in char_stmts if s.round < cutoff]
+                char_names = {"linlan": "林岚", "zhoumu": "周牧", "songzhi": "宋知微"}
+                name = char_names.get(character_id, character_id)
+                state.character_summaries[character_id] = _build_summary_from_statements(old_stmts, name)
+                state.summarized_up_to[character_id] = cutoff
 
         # Update per-character bookkeeping
         if character_id not in state.character_claims:
@@ -191,6 +284,84 @@ class ContinuityGuardian:
         """Return all statements made by *character_id* in the session."""
         state = self._ensure_session(session_id)
         return [s for s in state.statements if s.character_id == character_id]
+
+    def get_smart_memory(
+        self, session_id: str, character_id: str, player_action: str = ""
+    ) -> str:
+        """Build a layered memory context:
+        1. Compressed summary of old conversations (never lost)
+        2. ALL key statements (denials, admissions, emotions — never forgotten)
+        3. Topic-relevant statements matching the current player action
+        4. Most recent 3 statements for immediate context
+        """
+        state = self._ensure_session(session_id)
+        char_stmts = [s for s in state.statements if s.character_id == character_id]
+        if not char_stmts:
+            return ""
+
+        char_names = {"linlan": "林岚", "zhoumu": "周牧", "songzhi": "宋知微"}
+        name = char_names.get(character_id, character_id)
+        parts: List[str] = []
+
+        # Layer 1: Compressed summary of older rounds
+        summary = state.character_summaries.get(character_id, "")
+        if summary:
+            parts.append(f"【{name}的早期对话摘要】\n{summary}")
+
+        # Layer 2: Key statements (NEVER forgotten)
+        key_stmts = [s for s in char_stmts if s.is_key]
+        # Don't repeat keys that are in the recent 3
+        recent_rounds = {s.round for s in char_stmts[-3:]}
+        old_key_stmts = [s for s in key_stmts if s.round not in recent_rounds]
+        if old_key_stmts:
+            key_lines = []
+            for s in old_key_stmts[-6:]:  # Cap at 6 key memories
+                display = s.statement[:80] + "…" if len(s.statement) > 80 else s.statement
+                key_lines.append(f"- 第{s.round}轮: \"{display}\"")
+            parts.append(
+                f"【{name}的重要发言（不可遗忘）】\n" + "\n".join(key_lines)
+            )
+
+        # Layer 3: Topic-relevant statements matching player action
+        if player_action:
+            action_keywords = _extract_topic_keywords(player_action)
+            if action_keywords:
+                relevant = []
+                for s in char_stmts:
+                    if s.round in recent_rounds:
+                        continue  # Will be in Layer 4
+                    if s in old_key_stmts:
+                        continue  # Already in Layer 2
+                    stmt_keywords = _extract_topic_keywords(s.statement)
+                    overlap = set(action_keywords) & set(stmt_keywords)
+                    if overlap:
+                        relevant.append(s)
+                if relevant:
+                    rel_lines = []
+                    for s in relevant[-3:]:
+                        display = s.statement[:80] + "…" if len(s.statement) > 80 else s.statement
+                        rel_lines.append(f"- 第{s.round}轮: \"{display}\"")
+                    parts.append(
+                        f"【与当前话题相关的历史发言】\n" + "\n".join(rel_lines)
+                    )
+
+        # Layer 4: Most recent statements (immediate context)
+        recent = char_stmts[-3:]
+        if recent:
+            recent_lines = []
+            for s in recent:
+                display = s.statement[:80] + "…" if len(s.statement) > 80 else s.statement
+                recent_lines.append(f"- 第{s.round}轮: \"{display}\"")
+            parts.append(
+                f"【{name}最近的发言】\n" + "\n".join(recent_lines)
+            )
+
+        if parts:
+            parts.append(
+                "你必须与以上发言保持一致。如果你之前否认过某事，不能突然透露——除非有合理的角色动机。"
+            )
+
+        return "\n\n".join(parts)
 
     def get_context_summary(self, session_id: str, character_id: str) -> str:
         """Generate a concise summary of what this character has previously
