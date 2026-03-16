@@ -354,22 +354,13 @@ async def process_turn_stream(req: TurnRequest):
     if not req.player_action.strip():
         raise HTTPException(status_code=400, detail="player_action cannot be empty.")
 
-    # Large padding to force Render's reverse proxy to flush SSE immediately.
-    # Render buffers ~16KB before sending the first byte to the client.
-    _FLUSH_PAD = f": {' ' * 4096}\n\n"
-
     async def event_stream():
-        # Send 4 chunks of 4KB padding (~16KB total) to bust the proxy buffer
-        for _ in range(4):
-            yield _FLUSH_PAD
         try:
             async for event in engine.process_turn_streaming(
                 req.session_id, req.player_action
             ):
-                payload = f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                yield payload
-                # Extra padding after each event to keep flushing
-                yield _FLUSH_PAD
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(0)  # Yield control to flush the chunk
         except Exception as e:
             print(f"[ERROR] Stream turn failed: {e}", file=sys.stderr)
             yield f"data: {json.dumps({'type': 'error', 'text': f'Internal error: {str(e)}'})}\n\n"
@@ -381,8 +372,6 @@ async def process_turn_stream(req: TurnRequest):
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-            "Content-Encoding": "identity",
-            "Transfer-Encoding": "chunked",
         },
     )
 
