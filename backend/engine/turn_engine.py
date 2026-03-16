@@ -271,6 +271,239 @@ def _discover_clues_for_action(
     return discovered
 
 
+def _record_behavior_tags(state: GameState, action_result, player_action: str, target_char_id: str | None):
+    """Record behavior tags based on player action for ending calculation."""
+    tags = state.behavior_tags
+    choices = state.key_choices
+
+    cat = action_result.action_category
+    intent = action_result.legacy_intent
+
+    # Investigation style
+    if cat in ("investigate", "stealth"):
+        tags["investigate"] = tags.get("investigate", 0) + 1
+    if cat == "confront" or intent == "accuse":
+        tags["aggressive"] = tags.get("aggressive", 0) + 1
+    if cat == "social" and any(kw in player_action for kw in ["安慰", "理解", "相信", "帮", "没事", "别怕"]):
+        tags["empathetic"] = tags.get("empathetic", 0) + 1
+    if cat == "manipulate" or intent == "bluff":
+        tags["manipulative"] = tags.get("manipulative", 0) + 1
+    if cat in ("investigate",) and any(kw in player_action for kw in ["手机", "包", "口袋", "钱包", "私人"]):
+        tags["searched_private"] = tags.get("searched_private", 0) + 1
+    if cat in ("environmental",) and any(kw in player_action for kw in ["砸", "摔", "打碎", "踢"]):
+        tags["destructive"] = tags.get("destructive", 0) + 1
+    if cat == "communicate" and any(kw in player_action for kw in ["威胁", "恐吓", "警告", "最后机会"]):
+        tags["threatening"] = tags.get("threatening", 0) + 1
+
+    # Track unique locations visited
+    scene_short = state.scene.split("·")[-1] if "·" in state.scene else state.scene
+    visited_key = f"visited_{scene_short}"
+    if visited_key not in tags:
+        tags[visited_key] = 1
+
+    # Key choices (irreversible moments)
+    # Helped Zhou Mu when he was vulnerable
+    if target_char_id == "zhoumu" and cat == "social" and any(kw in player_action for kw in ["安慰", "帮", "相信", "理解"]):
+        if "helped_zhoumu" not in choices:
+            choices.append("helped_zhoumu")
+
+    # Exposed Lin Lan publicly
+    if target_char_id == "linlan" and cat == "confront" and any(kw in player_action for kw in ["手机", "消息", "按计划", "揭露", "揭穿"]):
+        if "exposed_linlan" not in choices:
+            choices.append("exposed_linlan")
+
+    # Shared info with Song Zhiwei
+    if target_char_id == "songzhi" and cat in ("communicate", "social") and any(kw in player_action for kw in ["告诉", "分享", "交换", "给你看", "展示"]):
+        if "trusted_songzhi" not in choices:
+            choices.append("trusted_songzhi")
+
+
+def _calc_truth_level(state: GameState) -> str:
+    """A=complete, B=core, C=partial, D=lost"""
+    discovered_ids = {c.id for c in state.clues if c.discovered}
+
+    truth_clues = {"cellar_sound", "staged_evidence", "linlan_phone_log"}
+    key_clues = {"will_draft", "cellar_provisions"}
+
+    truth_found = len(truth_clues & discovered_ids)
+    key_found = len(key_clues & discovered_ids)
+    total_found = len(discovered_ids)
+
+    if truth_found >= 2 and key_found >= 1 and total_found >= 6:
+        return "A"  # Complete truth
+    elif truth_found >= 1 and total_found >= 4:
+        return "B"  # Core truth
+    elif total_found >= 2:
+        return "C"  # Partial
+    else:
+        return "D"  # Lost
+
+
+def _calc_moral_stance(state: GameState) -> str:
+    """X=just, Y=gray, Z=chaos"""
+    tags = state.behavior_tags
+
+    aggressive = tags.get("aggressive", 0) + tags.get("threatening", 0)
+    destructive = tags.get("destructive", 0)
+    private_search = tags.get("searched_private", 0)
+    empathetic = tags.get("empathetic", 0)
+    manipulative = tags.get("manipulative", 0)
+
+    chaos_score = aggressive + destructive * 2 + manipulative
+    justice_score = empathetic * 2 - private_search - manipulative
+
+    if chaos_score >= 6 or destructive >= 2 or state.tension >= 90:
+        return "Z"  # Chaos
+    elif justice_score >= 2 and private_search <= 1 and aggressive <= 2:
+        return "X"  # Just
+    else:
+        return "Y"  # Gray area
+
+
+def _calc_relationship(state: GameState) -> str:
+    """α=allied, β=isolated, γ=hostile"""
+    allies = 0
+    hostile = 0
+    for char in state.characters:
+        if char.trust_to_player >= 60:
+            allies += 1
+        elif char.trust_to_player <= 20:
+            hostile += 1
+
+    if hostile >= 2:
+        return "γ"  # Hostile
+    elif allies >= 1:
+        return "α"  # Allied
+    else:
+        return "β"  # Isolated
+
+
+def _resolve_ending(truth: str, moral: str, rel: str, state: GameState) -> str:
+    """Generate ending text based on the three dimensions."""
+    discovered_count = sum(1 for c in state.clues if c.discovered)
+    choices = state.key_choices
+
+    # Get NPC names for personalized endings
+    ally_names = [c.name for c in state.characters if c.trust_to_player >= 60]
+    hostile_names = [c.name for c in state.characters if c.trust_to_player <= 20]
+
+    # ── Complete truth endings ──
+    if truth == "A":
+        if moral == "X" and rel == "α":
+            ally = ally_names[0] if ally_names else "林岚"
+            return (
+                f"完美破局——{ally}在最后关头站到了你这边。\n\n"
+                f"「跟我来。」{ally}带你走向酒窖深处，推开那扇隐藏的暗门。\n"
+                "顾言就坐在里面，看着监控画面。他抬头看你，缓缓鼓掌。\n\n"
+                "「你是唯一一个既找到了真相，又没有伤害任何人的人。」\n"
+                "「这场试探——你通过了。不只是智力上的，更是人格上的。」"
+            )
+        elif moral == "Z":
+            return (
+                "真相的讽刺——你找到了全部真相，但你的方式让所有人心寒。\n\n"
+                "顾言从酒窖密室走出来，看了看满地狼藉，又看了看你。\n"
+                "「你确实聪明。」他的语气很平淡，「但如果查案的过程中你变成了比嫌疑人更可怕的人——"
+                "那找到真相又有什么意义？」\n\n"
+                "他转身走了。你赢了推理，但输了更重要的东西。"
+            )
+        elif moral == "Y" and rel == "α":
+            return (
+                "代价真相——你找到了全部答案，但手段并不完全光彩。\n\n"
+                "顾言走出密室时，表情复杂。「你很厉害。」他停顿了一下，\n"
+                "「但翻别人手机、威胁嫌疑人……下次试试更干净的方法。」\n\n"
+                "宋知微在笔记本上写下最后一行：「真相水落石出——但侦探的手段值得商榷。」"
+            )
+        elif rel == "β":
+            return (
+                "孤胆真相——你独自揭开了全部真相，没有任何人帮你。\n\n"
+                "你在公开对峙中摆出所有证据。三个人面面相觑，没有人说话。\n"
+                "最后是赵伯打破了沉默：「既然侦探先生都看透了……我去请顾少爷出来吧。」\n\n"
+                "顾言走出酒窖时看着你：「你不需要任何人的帮助。这让我佩服，也让我有点……害怕。」"
+            )
+        else:
+            return (
+                "真相大白——你揭开了顾言自导自演的全部真相。\n\n"
+                "顾言从酒窖密室中走出，向你鼓掌：「了不起。你看穿了一切。」\n"
+                "一场精心设计的试探，在你面前无所遁形。"
+            )
+
+    # ── Core truth endings ──
+    elif truth == "B":
+        if "helped_zhoumu" in choices and rel == "α":
+            return (
+                "不完美但足够——你抓住了真相的核心，而你的善意带来了意外的回报。\n\n"
+                "当你在对峙中说出「顾言是自己策划了这场失踪」时，周牧沉默了很久。\n"
+                "然后他开口了：「他说得对。而且……我知道为什么。」\n\n"
+                "因为你之前的善意，周牧选择补上了你拼图中缺失的那块。\n"
+                "真相在两个人的合力下浮出水面。"
+            )
+        elif rel == "γ":
+            return (
+                "被围攻的真相——你说对了核心，但没有人愿意站在你这边。\n\n"
+                "「顾言是自己失踪的！」你在对峙中大声说出结论。\n"
+                f"但{hostile_names[0] if hostile_names else '周牧'}冷笑：「你有证据吗？还是又在诈唬？」\n\n"
+                "没有盟友为你佐证，你的推理在三个人的沉默中显得苍白。\n"
+                "直到天亮——顾言自己走出来，证实了你的判断。但这个夜晚，没有人觉得你赢了。"
+            )
+        else:
+            return (
+                "核心真相——你看穿了最关键的秘密：顾言的失踪是自导自演。\n\n"
+                "虽然还有一些细节你没来得及挖掘，但方向完全正确。\n"
+                "顾言走出酒窖时，对你微微点头：「你走得比大多数人都远。」"
+            )
+
+    # ── Partial truth endings ──
+    elif truth == "C":
+        if moral == "X" and rel == "α":
+            ally = ally_names[0] if ally_names else "林岚"
+            return (
+                f"留白结局——你走在正确的方向上，{ally}看到了你的正直。\n\n"
+                "天亮了，你还差最后一步。但你的调查方式赢得了尊重。\n"
+                f"离开老宅时，{ally}悄悄塞给你一张纸条：\n"
+                "「答案在酒窖最深处。下次来，我带你去。」\n\n"
+                "你没有在这一夜解开全部真相——但你知道，真相不会永远沉默。"
+            )
+        elif moral == "Z":
+            return (
+                "反噬——你的激进手段搞砸了一切。\n\n"
+                "在你的高压审讯下，局面彻底失控。周牧在崩溃中喊出了半截真相，\n"
+                "但更多的证据在混乱中被毁。林岚关上了所有的门。\n\n"
+                "「你不是侦探，」宋知微合上笔记本，「你是第四个嫌疑人。」\n"
+                "天亮后警察到来，你和其他人一起被带走问话。"
+            )
+        else:
+            return (
+                "方向正确——你发现了一些关键线索，但真相的全貌还笼罩在迷雾中。\n\n"
+                "你给出了你的判断。不完美，但方向是对的。\n"
+                "后续的调查证实了你的部分推理——但完整的真相比你想象的更曲折。"
+            )
+
+    # ── Lost endings ──
+    else:  # truth == "D"
+        if moral == "Z" and rel == "γ":
+            return (
+                "彻底崩盘——你什么都没查到，还把所有人变成了敌人。\n\n"
+                "天亮了。警察到来时，三个嫌疑人异口同声：「我们要投诉这个侦探。」\n"
+                "你被请出了顾家大门。第二天新闻上说，顾言自己回了家。\n"
+                "「一场误会。」报道上这么写。\n\n"
+                "但你知道不是。你只是没有能力——或者没有耐心——去找到答案。"
+            )
+        elif moral == "X":
+            return (
+                "正直的失败——你的方法无可指摘，但时间不够了。\n\n"
+                "天亮时你还站在走廊里，手里握着几条零散的线索。\n"
+                "顾言第二天自己走出了酒窖。他看了看你收集的笔记，叹了口气：\n"
+                "「你是个好人。但有时候，好人需要走得更快一些。」"
+            )
+        else:
+            return (
+                "迷雾未散——天亮了，真相仍然笼罩在迷雾之中。\n\n"
+                "你尽力了，但这个夜晚的秘密太多、太深。\n"
+                "离开老宅时，你回头看了一眼。那些窗户后面，到底藏着什么？\n"
+                "也许有些真相，需要不止一个夜晚才能揭开。"
+            )
+
+
 class TurnEngine:
     """Sandbox turn engine with DM control."""
 
@@ -1286,6 +1519,9 @@ class TurnEngine:
                     char.suspicion + action_result.suspicion_changes[char.id]
                 )
 
+        # ── Behavior tagging for ending system ──
+        _record_behavior_tags(state, action_result, player_action, target_char_id)
+
         # Clue discovery (DM can suppress for pacing)
         new_clue_texts = []
         new_clue_ids: List[str] = []
@@ -1421,18 +1657,8 @@ class TurnEngine:
 
         if state.round >= state.max_rounds:
             game_over = True
-            ending = (
-                "时间耗尽——天亮了，警察到来。"
-                "你未能在限定时间内查明真相。"
-                "顾言从酒窖密室中走出，揭示了一切都是他的试探。"
-            )
         elif state.tension >= 100:
             game_over = True
-            ending = (
-                "局势彻底失控——有人在混乱中摔碎了花瓶，"
-                "警报声大作。管家报了警，所有人被带走问话。"
-                "真相依然笼罩在迷雾之中。"
-            )
         else:
             cellar_sound = next(
                 (c for c in state.clues if c.id == "cellar_sound"), None
@@ -1444,12 +1670,6 @@ class TurnEngine:
                 and state.tension >= 80
             ):
                 game_over = True
-                ending = (
-                    "真相大白——你在酒窖深处发现了一间密室，"
-                    "顾言就在里面！他微微一笑：'你找到我了。'"
-                    "原来一切都是顾言自导自演的试探。"
-                    "他想看看在他'失踪'后，身边的人会露出怎样的真面目。"
-                )
 
             if legacy_intent == "accuse" and player_action:
                 try:
@@ -1460,24 +1680,24 @@ class TurnEngine:
                     )
                     if deduction.ending_type in ("perfect", "good"):
                         game_over = True
-                        ending = deduction.response_text
                 except Exception:
                     action_lower = player_action.lower()
                     truth_kw = ["自导自演", "自己策划", "假装失踪", "酒窖密室", "试探"]
                     if sum(1 for kw in truth_kw if kw in action_lower) >= 2:
                         game_over = True
-                        ending = (
-                            "完美破局——你精准地道出了真相的核心！"
-                            "顾言从酒窖密室中走出，向你鼓掌：'了不起，你看穿了一切。'"
-                        )
 
         if game_over:
             state.game_over = True
+            # Use behavior-chain ending system
+            truth_level = _calc_truth_level(state)
+            moral_stance = _calc_moral_stance(state)
+            relationship = _calc_relationship(state)
+            ending = _resolve_ending(truth_level, moral_stance, relationship, state)
             # Calculate detective score
             score = calculate_score(
                 clues_found=sum(1 for c in state.clues if c.discovered),
                 total_clues=len(state.clues),
-                truth_accuracy=0.8 if ending and ("完美" in ending or "真相" in ending) else 0.4,
+                truth_accuracy={"A": 1.0, "B": 0.7, "C": 0.4, "D": 0.15}.get(truth_level, 0.4),
                 rounds_used=state.round,
                 max_rounds=state.max_rounds,
                 lies_caught=len(caught_lies),
@@ -1486,6 +1706,7 @@ class TurnEngine:
             )
             score_text = (
                 f"\n\n{'─'*30}\n"
+                f"结局维度: 真相={truth_level} 立场={moral_stance} 关系={relationship}\n"
                 f"侦探评分: {score.total_score}/100 — {score.rank}级 ({score.rank_title})\n"
                 f"  线索收集: {score.clue_score}/40\n"
                 f"  推理质量: {score.deduction_score}/30\n"
@@ -2067,6 +2288,9 @@ class TurnEngine:
                         char.suspicion + action_result.suspicion_changes[char.id]
                     )
 
+            # ── Behavior tagging for ending system ──
+            _record_behavior_tags(state, action_result, player_action, target_char_id)
+
             new_clue_texts = []
             new_clue_ids: List[str] = []
             if dm_directive.allow_clue_discovery:
@@ -2197,18 +2421,8 @@ class TurnEngine:
 
             if state.round >= state.max_rounds:
                 game_over = True
-                ending = (
-                    "时间耗尽——天亮了，警察到来。"
-                    "你未能在限定时间内查明真相。"
-                    "顾言从酒窖密室中走出，揭示了一切都是他的试探。"
-                )
             elif state.tension >= 100:
                 game_over = True
-                ending = (
-                    "局势彻底失控——有人在混乱中摔碎了花瓶，"
-                    "警报声大作。管家报了警，所有人被带走问话。"
-                    "真相依然笼罩在迷雾之中。"
-                )
             else:
                 cellar_sound = next(
                     (c for c in state.clues if c.id == "cellar_sound"), None
@@ -2220,12 +2434,6 @@ class TurnEngine:
                     and state.tension >= 80
                 ):
                     game_over = True
-                    ending = (
-                        "真相大白——你在酒窖深处发现了一间密室，"
-                        "顾言就在里面！他微微一笑：'你找到我了。'"
-                        "原来一切都是顾言自导自演的试探。"
-                        "他想看看在他'失踪'后，身边的人会露出怎样的真面目。"
-                    )
 
                 if legacy_intent == "accuse" and player_action:
                     try:
@@ -2236,23 +2444,23 @@ class TurnEngine:
                         )
                         if deduction.ending_type in ("perfect", "good"):
                             game_over = True
-                            ending = deduction.response_text
                     except Exception:
                         action_lower = player_action.lower()
                         truth_kw = ["自导自演", "自己策划", "假装失踪", "酒窖密室", "试探"]
                         if sum(1 for kw in truth_kw if kw in action_lower) >= 2:
                             game_over = True
-                            ending = (
-                                "完美破局——你精准地道出了真相的核心！"
-                                "顾言从酒窖密室中走出，向你鼓掌：'了不起，你看穿了一切。'"
-                            )
 
             if game_over:
                 state.game_over = True
+                # Use behavior-chain ending system
+                truth_level = _calc_truth_level(state)
+                moral_stance = _calc_moral_stance(state)
+                relationship = _calc_relationship(state)
+                ending = _resolve_ending(truth_level, moral_stance, relationship, state)
                 score = calculate_score(
                     clues_found=sum(1 for c in state.clues if c.discovered),
                     total_clues=len(state.clues),
-                    truth_accuracy=0.8 if ending and ("完美" in ending or "真相" in ending) else 0.4,
+                    truth_accuracy={"A": 1.0, "B": 0.7, "C": 0.4, "D": 0.15}.get(truth_level, 0.4),
                     rounds_used=state.round,
                     max_rounds=state.max_rounds,
                     lies_caught=len(caught_lies),
@@ -2261,6 +2469,7 @@ class TurnEngine:
                 )
                 score_text = (
                     f"\n\n{'─'*30}\n"
+                    f"结局维度: 真相={truth_level} 立场={moral_stance} 关系={relationship}\n"
                     f"侦探评分: {score.total_score}/100 — {score.rank}级 ({score.rank_title})\n"
                     f"  线索收集: {score.clue_score}/40\n"
                     f"  推理质量: {score.deduction_score}/30\n"

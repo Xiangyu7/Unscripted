@@ -147,6 +147,8 @@ class GameState(BaseModel):
     game_over: bool = False
     ending: Optional[str] = None
     max_rounds: int = 20
+    behavior_tags: Dict[str, int] = Field(default_factory=dict)  # tag -> count
+    key_choices: List[str] = Field(default_factory=list)  # irreversible choices made
 
 
 def _dedupe_texts(items: List[str]) -> List[str]:
@@ -259,6 +261,9 @@ def record_fact_disclosure(
 def redact_game_state(state: GameState) -> dict:
     """Return a player-safe snapshot of game state."""
     state_dict = state.model_dump()
+    # Strip internal tracking fields — not for the frontend
+    state_dict.pop("behavior_tags", None)
+    state_dict.pop("key_choices", None)
     state_dict["truth"] = {
         "core_truth": "[REDACTED]",
         "culprit": state.truth.culprit,
