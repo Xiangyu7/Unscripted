@@ -863,6 +863,15 @@ export default function HomePage() {
     initializeGame();
   }, [initializeGame]);
 
+  const handleUndo = useCallback(() => {
+    setFeedItems((prev) => {
+      // Find the last "player" item and remove everything from it onwards
+      const lastPlayerIdx = prev.findLastIndex((item) => item.type === "player");
+      if (lastPlayerIdx < 0) return prev;
+      return prev.slice(0, lastPlayerIdx);
+    });
+  }, []);
+
   const handleQuickAction = useCallback(
     (action: string) => {
       handleSubmitAction(action);
@@ -985,21 +994,7 @@ export default function HomePage() {
                         ))}
                       </div>
                     </div>
-                  ) : (
-                    <button
-                      onClick={() => handleSubmitAction("发起公开对峙")}
-                      disabled={isBusy || !gameState}
-                      className="btn-transition w-full rounded-lg border border-rose-700/40 bg-rose-950/20 px-4 py-3 text-left text-sm text-rose-100 hover:bg-rose-950/30 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <span className="block text-xs uppercase tracking-[0.18em] text-rose-300/80">
-                        Endgame
-                      </span>
-                      <span className="mt-1 block font-medium">发起公开对峙</span>
-                      <span className="mt-1 block text-xs text-rose-200/80">
-                        把所有人叫回宴会厅，进入公开发言和最终投票。
-                      </span>
-                    </button>
-                  )}
+                  ) : null}
                 </div>
 
                 <div className="px-4 pb-2 pt-3">
@@ -1053,6 +1048,15 @@ export default function HomePage() {
                 </div>
 
                 <form onSubmit={handleInputSubmit} className="p-3 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleUndo}
+                    disabled={isBusy || feedItems.findLastIndex((i) => i.type === "player") < 0}
+                    className="btn-transition shrink-0 px-3 py-2.5 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-600 text-slate-300 rounded-lg text-sm disabled:cursor-not-allowed"
+                    title="撤回上一条"
+                  >
+                    撤回
+                  </button>
                   <input
                     ref={inputRef}
                     type="text"
