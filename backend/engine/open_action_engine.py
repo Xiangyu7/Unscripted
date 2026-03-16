@@ -164,6 +164,101 @@ success_level 必须是以下之一：full / partial / blocked
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Function-calling / tool schemas
+# ═══════════════════════════════════════════════════════════════════════════
+
+# OpenAI-compatible function schema (used with `tools` parameter)
+_ACTION_CONSEQUENCE_TOOL_OPENAI = {
+    "type": "function",
+    "function": {
+        "name": "action_consequence",
+        "description": "模拟玩家行为在游戏世界中产生的后果。返回行为理解、可行性判断、后果模拟、线索发现和中文叙述。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action_summary": {
+                    "type": "string",
+                    "description": "一句话总结玩家在做什么",
+                },
+                "action_category": {
+                    "type": "string",
+                    "enum": ["social", "investigate", "manipulate", "move", "confront", "stealth", "environmental", "communicate", "other"],
+                    "description": "行为类别",
+                },
+                "targets": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "涉及的角色ID、物品名称或目标地点",
+                },
+                "feasible": {
+                    "type": "boolean",
+                    "description": "该行为是否物理/逻辑上可行",
+                },
+                "infeasible_reason": {
+                    "type": "string",
+                    "description": "如果不可行，解释原因",
+                },
+                "success_level": {
+                    "type": "string",
+                    "enum": ["full", "partial", "blocked"],
+                    "description": "行为成功程度",
+                },
+                "tension_delta": {
+                    "type": "integer",
+                    "description": "紧张度变化值，范围 -5 到 20",
+                },
+                "trust_changes": {
+                    "type": "object",
+                    "additionalProperties": {"type": "integer"},
+                    "description": "角色ID到信任度变化值的映射",
+                },
+                "suspicion_changes": {
+                    "type": "object",
+                    "additionalProperties": {"type": "integer"},
+                    "description": "角色ID到怀疑度变化值的映射",
+                },
+                "world_changes": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "世界状态变化列表，每项包含type和detail",
+                },
+                "discovered_clues": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "发现的线索ID列表",
+                },
+                "npc_reactions": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": "角色ID到简短反应描述的映射",
+                },
+                "witness_characters": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "目击该行为的角色ID列表",
+                },
+                "narration": {
+                    "type": "string",
+                    "description": "中文叙述，基于世界状态中的场景细节描写（50-150字）",
+                },
+            },
+            "required": [
+                "action_summary", "action_category", "targets", "feasible",
+                "success_level", "tension_delta", "narration",
+            ],
+        },
+    },
+}
+
+# Anthropic tool schema (used with Anthropic's tool_use format)
+_ACTION_CONSEQUENCE_TOOL_ANTHROPIC = {
+    "name": "action_consequence",
+    "description": "模拟玩家行为在游戏世界中产生的后果。返回行为理解、可行性判断、后果模拟、线索发现和中文叙述。",
+    "input_schema": _ACTION_CONSEQUENCE_TOOL_OPENAI["function"]["parameters"],
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Fallback: enhanced free-form action patterns
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -806,12 +901,13 @@ class OpenActionEngine:
         characters_context: str,
         recent_history: Optional[List[str]] = None,
     ) -> ActionConsequence:
-        """Send action + context to LLM and parse the consequence JSON."""
+        """Send action + context to LLM and parse the consequence via tool calls."""
         user_prompt = self._build_user_prompt(
             player_action, world_context, characters_context, recent_history
         )
 
         raw: str = ""
+        data: Optional[dict] = None
 
         if self.config.provider == LLMProvider.OPENAI_COMPATIBLE:
             response = await self.client.chat.completions.create(
@@ -820,10 +916,21 @@ class OpenActionEngine:
                     {"role": "system", "content": _WORLD_SIMULATOR_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
+                tools=[_ACTION_CONSEQUENCE_TOOL_OPENAI],
+                tool_choice={"type": "function", "function": {"name": "action_consequence"}},
                 temperature=0.7,
                 max_tokens=800,
             )
-            raw = response.choices[0].message.content or ""
+            msg = response.choices[0].message
+            # Try to parse from tool_calls first
+            if msg.tool_calls:
+                try:
+                    data = json.loads(msg.tool_calls[0].function.arguments)
+                except (json.JSONDecodeError, AttributeError, IndexError):
+                    pass
+            # Fall back to parsing message.content if tool_calls missing
+            if data is None:
+                raw = msg.content or ""
 
         elif self.config.provider == LLMProvider.ANTHROPIC:
             response = await self.client.messages.create(
@@ -831,13 +938,33 @@ class OpenActionEngine:
                 max_tokens=800,
                 system=_WORLD_SIMULATOR_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_prompt}],
+                tools=[_ACTION_CONSEQUENCE_TOOL_ANTHROPIC],
+                tool_choice={"type": "tool", "name": "action_consequence"},
                 temperature=0.7,
             )
-            raw = response.content[0].text or ""
+            # Anthropic returns tool_use blocks in content
+            for block in response.content:
+                if block.type == "tool_use" and block.name == "action_consequence":
+                    data = block.input
+                    break
+            # Fall back to text block if no tool_use found
+            if data is None:
+                for block in response.content:
+                    if block.type == "text":
+                        raw = block.text or ""
+                        break
 
-        result = self._parse_llm_response(raw)
-        if result is not None:
-            return result
+        # If we got structured data from tool_calls, build result directly
+        if data is not None:
+            result = self._parse_tool_data(data)
+            if result is not None:
+                return result
+
+        # Otherwise try to parse from raw text content
+        if raw:
+            result = self._parse_llm_response(raw)
+            if result is not None:
+                return result
 
         # LLM returned unparseable output — fall back
         print(
@@ -931,6 +1058,79 @@ class OpenActionEngine:
         return "\n".join(parts)
 
     # ── Response parsing ─────────────────────────────────────────────────
+
+    def _parse_tool_data(self, data: dict) -> Optional[ActionConsequence]:
+        """
+        Parse pre-extracted tool-call data (already a dict) into ActionConsequence.
+
+        Applies the same validation and clamping as _parse_llm_response but
+        skips the JSON extraction step since the data is already structured.
+        """
+        if not isinstance(data, dict):
+            return None
+
+        action_summary = str(data.get("action_summary", ""))
+        action_category = str(data.get("action_category", "other"))
+        if action_category not in VALID_CATEGORIES:
+            action_category = "other"
+
+        targets = data.get("targets", [])
+        if not isinstance(targets, list):
+            targets = []
+        targets = [str(t) for t in targets]
+
+        feasible = bool(data.get("feasible", True))
+        infeasible_reason = str(data.get("infeasible_reason", ""))
+
+        success_level = str(data.get("success_level", "full"))
+        if success_level not in VALID_SUCCESS_LEVELS:
+            success_level = "full"
+
+        tension_delta = _clamp_int(data.get("tension_delta", 0), -5, 20)
+
+        trust_changes = _parse_int_dict(data.get("trust_changes", {}), -15, 15)
+        suspicion_changes = _parse_int_dict(data.get("suspicion_changes", {}), -15, 15)
+
+        world_changes = data.get("world_changes", [])
+        if not isinstance(world_changes, list):
+            world_changes = []
+
+        discovered_clues = data.get("discovered_clues", [])
+        if not isinstance(discovered_clues, list):
+            discovered_clues = []
+        discovered_clues = [str(c) for c in discovered_clues]
+
+        npc_reactions = data.get("npc_reactions", {})
+        if not isinstance(npc_reactions, dict):
+            npc_reactions = {}
+        npc_reactions = {str(k): str(v) for k, v in npc_reactions.items()}
+
+        witness_characters = data.get("witness_characters", [])
+        if not isinstance(witness_characters, list):
+            witness_characters = []
+        witness_characters = [str(w) for w in witness_characters]
+
+        narration = str(data.get("narration", ""))
+
+        legacy_intent = _CATEGORY_TO_LEGACY.get(action_category, "other")
+
+        return ActionConsequence(
+            action_summary=action_summary,
+            action_category=action_category,
+            targets=targets,
+            feasible=feasible,
+            infeasible_reason=infeasible_reason,
+            success_level=success_level,
+            tension_delta=tension_delta,
+            trust_changes=trust_changes,
+            suspicion_changes=suspicion_changes,
+            world_changes=world_changes,
+            discovered_clues=discovered_clues,
+            npc_reactions=npc_reactions,
+            witness_characters=witness_characters,
+            narration=narration,
+            legacy_intent=legacy_intent,
+        )
 
     def _parse_llm_response(self, raw_text: str) -> Optional[ActionConsequence]:
         """

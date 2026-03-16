@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import random
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -209,6 +209,74 @@ ARCHITECT_SYSTEM_PROMPT = """你是一个互动悬疑叙事游戏的"故事建�
 
 
 # ---------------------------------------------------------------------------
+# Function-calling / tool schemas
+# ---------------------------------------------------------------------------
+
+# OpenAI-compatible function schema (used with `tools` parameter)
+_ARCHITECT_DIRECTIVE_TOOL_OPENAI = {
+    "type": "function",
+    "function": {
+        "name": "architect_directive",
+        "description": "生成本轮的叙事指令，管理故事的戏剧结构和节奏。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "current_act": {
+                    "type": "integer",
+                    "enum": [1, 2, 3],
+                    "description": "当前所处的幕次",
+                },
+                "current_beat": {
+                    "type": "string",
+                    "enum": ["setup", "rising", "crisis", "climax", "resolution"],
+                    "description": "当前的叙事节拍",
+                },
+                "pacing": {
+                    "type": "string",
+                    "enum": ["accelerate", "sustain", "slow_down", "climax"],
+                    "description": "节奏控制",
+                },
+                "director_note": {
+                    "type": "string",
+                    "description": "给玩家的氛围暗示（中文，不超过50字）",
+                },
+                "system_narration": {
+                    "type": "string",
+                    "description": "场景氛围描写（中文，不超过80字）",
+                },
+                "suggested_events": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "建议的NPC互动事件（中文，0-2个）",
+                },
+                "hint_level": {
+                    "type": "string",
+                    "enum": ["none", "subtle", "moderate", "strong"],
+                    "description": "给玩家的提示等级",
+                },
+                "should_reveal_clue": {
+                    "type": "boolean",
+                    "description": "是否应该帮助玩家在本轮发现线索",
+                },
+            },
+            "required": [
+                "current_act", "current_beat", "pacing",
+                "director_note", "system_narration",
+                "hint_level", "should_reveal_clue",
+            ],
+        },
+    },
+}
+
+# Anthropic tool schema (used with Anthropic's tool_use format)
+_ARCHITECT_DIRECTIVE_TOOL_ANTHROPIC = {
+    "name": "architect_directive",
+    "description": "生成本轮的叙事指令，管理故事的戏剧结构和节奏。",
+    "input_schema": _ARCHITECT_DIRECTIVE_TOOL_OPENAI["function"]["parameters"],
+}
+
+
+# ---------------------------------------------------------------------------
 # StoryArchitectAgent
 # ---------------------------------------------------------------------------
 
@@ -276,8 +344,11 @@ class StoryArchitectAgent:
     # ------------------------------------------------------------------
 
     async def _generate_with_llm(self, state_summary: dict) -> ArchitectDirective:
-        """Generate directive using LLM."""
+        """Generate directive using LLM with function calling (tool_use)."""
         user_prompt = self._build_user_prompt(state_summary)
+
+        parsed: Optional[dict] = None
+        raw: str = ""
 
         if self.config.provider == LLMProvider.OPENAI_COMPATIBLE:
             response = await self.client.chat.completions.create(
@@ -286,10 +357,21 @@ class StoryArchitectAgent:
                     {"role": "system", "content": ARCHITECT_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
+                tools=[_ARCHITECT_DIRECTIVE_TOOL_OPENAI],
+                tool_choice={"type": "function", "function": {"name": "architect_directive"}},
                 temperature=0.7,
                 max_tokens=600,
             )
-            raw = response.choices[0].message.content
+            msg = response.choices[0].message
+            # Try to parse from tool_calls first
+            if msg.tool_calls:
+                try:
+                    parsed = json.loads(msg.tool_calls[0].function.arguments)
+                except (json.JSONDecodeError, AttributeError, IndexError):
+                    pass
+            # Fall back to parsing message.content if tool_calls missing
+            if parsed is None:
+                raw = msg.content or ""
 
         elif self.config.provider == LLMProvider.ANTHROPIC:
             response = await self.client.messages.create(
@@ -297,28 +379,74 @@ class StoryArchitectAgent:
                 max_tokens=600,
                 system=ARCHITECT_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_prompt}],
+                tools=[_ARCHITECT_DIRECTIVE_TOOL_ANTHROPIC],
+                tool_choice={"type": "tool", "name": "architect_directive"},
                 temperature=0.7,
             )
-            raw = response.content[0].text
+            # Anthropic returns tool_use blocks in content
+            for block in response.content:
+                if block.type == "tool_use" and block.name == "architect_directive":
+                    parsed = block.input
+                    break
+            # Fall back to text block if no tool_use found
+            if parsed is None:
+                for block in response.content:
+                    if block.type == "text":
+                        raw = block.text or ""
+                        break
         else:
             raise ValueError(f"Unsupported provider: {self.config.provider}")
 
-        # Parse JSON (handle possible markdown wrapping)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-            raw = raw.rsplit("```", 1)[0]
-        parsed = json.loads(raw)
+        # If tool_calls didn't yield data, try parsing raw text (markdown-wrapped JSON)
+        if parsed is None and raw:
+            raw = raw.strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+                raw = raw.rsplit("```", 1)[0]
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                raise ValueError(f"Failed to parse LLM response: {raw[:300]}")
+
+        if parsed is None:
+            raise ValueError("LLM returned no tool call and no parseable content")
+
+        return self._build_directive_from_data(parsed, state_summary)
+
+    def _build_directive_from_data(
+        self, parsed: dict, state_summary: dict
+    ) -> ArchitectDirective:
+        """Build an ArchitectDirective from a parsed data dict with validation."""
+        current_act = parsed.get("current_act", self._determine_act(state_summary))
+        if current_act not in (1, 2, 3):
+            current_act = self._determine_act(state_summary)
+
+        current_beat = parsed.get("current_beat", "setup")
+        if current_beat not in ("setup", "rising", "crisis", "climax", "resolution"):
+            current_beat = "setup"
+
+        pacing = parsed.get("pacing", "sustain")
+        if pacing not in ("accelerate", "sustain", "slow_down", "climax"):
+            pacing = "sustain"
+
+        hint_level = parsed.get("hint_level", "none")
+        if hint_level not in ("none", "subtle", "moderate", "strong"):
+            hint_level = "none"
+
+        suggested_events = parsed.get("suggested_events", [])
+        if not isinstance(suggested_events, list):
+            suggested_events = []
+        suggested_events = [str(e) for e in suggested_events[:2]]
 
         return ArchitectDirective(
-            current_act=parsed.get("current_act", self._determine_act(state_summary)),
-            current_beat=parsed.get("current_beat", "setup"),
-            pacing=parsed.get("pacing", "sustain"),
-            director_note=parsed.get("director_note", "")[:50],
-            system_narration=parsed.get("system_narration", "")[:80],
-            suggested_events=parsed.get("suggested_events", []),
-            hint_level=parsed.get("hint_level", "none"),
-            should_reveal_clue=parsed.get("should_reveal_clue", False),
+            current_act=current_act,
+            current_beat=current_beat,
+            pacing=pacing,
+            director_note=str(parsed.get("director_note", ""))[:50],
+            system_narration=str(parsed.get("system_narration", ""))[:80],
+            suggested_events=suggested_events,
+            hint_level=hint_level,
+            should_reveal_clue=bool(parsed.get("should_reveal_clue", False)),
         )
 
     def _build_user_prompt(self, state_summary: dict) -> str:

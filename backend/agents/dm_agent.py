@@ -192,19 +192,7 @@ DM_SYSTEM_PROMPT = """\u4f60\u662f\u4e00\u4e2a\u4e92\u52a8\u63a8\u7406\u6e38\u62
 9. \u5982\u679c\u73a9\u5bb6\u505a\u4e86\u521b\u610f\u884c\u4e3a\uff0c\u7ed9\u4e88\u4e30\u5bcc\u7684\u53cd\u9988\u548c\u5956\u52b1
 10. \u63a7\u5236\u4fe1\u606f\u91ca\u653e\u8282\u594f\u2014\u2014\u4e0d\u8981\u4e00\u6b21\u7ed9\u592a\u591a\u7ebf\u7d22
 
-\u4f60\u5fc5\u987b\u4ee5JSON\u683c\u5f0f\u56de\u590d\uff0c\u5305\u542b\u4ee5\u4e0b\u5b57\u6bb5\uff1a
-- system_narration: \u6700\u7ec8\u53d9\u4e8b\u6587\u672c\uff08\u4e2d\u6587\uff0c\u4e0d\u8d85\u8fc7120\u5b57\uff09
-- director_note: \u6c1b\u56f4\u63d0\u793a\uff08\u4e2d\u6587\uff0c\u4e0d\u8d85\u8fc760\u5b57\uff09
-- approved_events: \u672c\u56de\u5408\u5b9e\u9645\u53d1\u751f\u7684\u4e8b\u4ef6\u6570\u7ec4\uff08\u6700\u591a2\u4e2a\uff09
-- suppressed_events: \u88ab\u538b\u5236\u7684\u4e8b\u4ef6\u6570\u7ec4
-- deferred_events: \u5ef6\u8fdf\u5230\u4ee5\u540e\u56de\u5408\u7684\u4e8b\u4ef6\u6570\u7ec4
-- final_tension_delta: \u6700\u7ec8\u7d27\u5f20\u5ea6\u53d8\u5316
-- turn_mood: \u56de\u5408\u60c5\u7eea\uff08calm/building/tense/explosive/aftermath\uff09
-- allow_clue_discovery: \u662f\u5426\u5141\u8bb8\u53d1\u73b0\u7ebf\u7d22
-- hint_text: \u7ed9\u73a9\u5bb6\u7684\u63d0\u793a\uff08\u53ef\u4e3anull\uff09
-- inject_twist: \u60c5\u8282\u53cd\u8f6c\uff08\u53ef\u4e3anull\uff0c\u6781\u5c11\u4f7f\u7528\uff09
-- atmosphere_override: \u6c1b\u56f4\u8986\u76d6\uff08\u53ef\u4e3anull\uff09
-- dm_reasoning: \u4f60\u7684\u5185\u90e8\u63a8\u7406\u8fc7\u7a0b\uff08\u7528\u4e8e\u8c03\u8bd5\uff09"""
+\u8bf7\u7efc\u5408\u6240\u6709\u4ee3\u7406\u63d0\u6848\uff0c\u505a\u51fa\u6700\u7ec8\u51b3\u7b56\u3002\u8c03\u7528 dm_directive \u5de5\u5177\u6765\u8fd4\u56de\u4f60\u7684\u51b3\u5b9a\u3002"""
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +210,8 @@ class DMAgent:
 
     The agent supports two paths:
     * **LLM path** (OpenAI-compatible or Anthropic) -- sends the full
-      proposal context to an LLM and parses a structured JSON response.
+      proposal context to an LLM and uses function calling (tool_use)
+      to obtain a structured ``DMDirective`` response.
     * **Fallback path** -- applies deterministic, rule-based logic when
       no LLM is available or the LLM call fails.
 
@@ -286,6 +275,101 @@ class DMAgent:
         return directive
 
     # ------------------------------------------------------------------
+    # Tool schema for structured LLM output
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_tool_schema() -> dict:
+        """Return the OpenAI function-calling tool definition for DMDirective.
+
+        Uses simple types that GLM-4-Flash can handle reliably.
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": "dm_directive",
+                "description": "Submit the DM's final directive for this turn.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "system_narration": {
+                            "type": "string",
+                            "description": "Final narration text (Chinese, max 120 chars).",
+                        },
+                        "director_note": {
+                            "type": "string",
+                            "description": "Atmospheric note (Chinese, max 60 chars).",
+                        },
+                        "approved_events": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": 2,
+                            "description": "Events that actually happen this turn (max 2).",
+                        },
+                        "suppressed_events": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Events suppressed this turn.",
+                        },
+                        "deferred_events": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Events deferred to a later turn.",
+                        },
+                        "final_tension_delta": {
+                            "type": "integer",
+                            "description": "Final tension change for this turn.",
+                        },
+                        "turn_mood": {
+                            "type": "string",
+                            "enum": ["calm", "building", "tense", "explosive", "aftermath"],
+                            "description": "Overall mood of this turn.",
+                        },
+                        "allow_clue_discovery": {
+                            "type": "boolean",
+                            "description": "Whether the player may discover a clue this turn.",
+                        },
+                        "npc_visibility": {
+                            "type": "object",
+                            "description": "Map of NPC action keys to visibility booleans.",
+                        },
+                        "force_npc_reaction": {
+                            "type": "string",
+                            "description": "NPC ID forced to react, or empty string if none.",
+                        },
+                        "hint_text": {
+                            "type": "string",
+                            "description": "Hint for the player, or empty string if none.",
+                        },
+                        "inject_twist": {
+                            "type": "string",
+                            "description": "Plot twist text, or empty string if none.",
+                        },
+                        "atmosphere_override": {
+                            "type": "string",
+                            "description": "Atmosphere override text, or empty string if none.",
+                        },
+                        "dm_reasoning": {
+                            "type": "string",
+                            "description": "Internal reasoning for debugging.",
+                        },
+                    },
+                    "required": [
+                        "system_narration",
+                        "director_note",
+                        "approved_events",
+                        "suppressed_events",
+                        "deferred_events",
+                        "final_tension_delta",
+                        "turn_mood",
+                        "allow_clue_discovery",
+                        "dm_reasoning",
+                    ],
+                },
+            },
+        }
+
+    # ------------------------------------------------------------------
     # LLM-based adjudication
     # ------------------------------------------------------------------
 
@@ -295,9 +379,17 @@ class DMAgent:
         session_id: str,
     ) -> DMDirective:
         """Send all proposals as structured context to the LLM and parse
-        the JSON response into a ``DMDirective``."""
+        the structured tool-call response into a ``DMDirective``.
+
+        OpenAI-compatible path: uses function calling (``tools`` parameter)
+        to get structured output directly, avoiding manual JSON parsing.
+
+        Anthropic path: uses ``tool_use`` content blocks (Anthropic's
+        native tool-calling format).
+        """
 
         user_prompt = self._build_llm_prompt(proposals, session_id)
+        tool_schema = self._build_tool_schema()
 
         if self.config.provider == LLMProvider.OPENAI_COMPATIBLE:
             response = await self.client.chat.completions.create(
@@ -306,30 +398,52 @@ class DMAgent:
                     {"role": "system", "content": DM_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
+                tools=[tool_schema],
+                tool_choice={
+                    "type": "function",
+                    "function": {"name": "dm_directive"},
+                },
                 temperature=0.7,
                 max_tokens=800,
             )
-            raw = response.choices[0].message.content
+            tool_call = response.choices[0].message.tool_calls[0]
+            raw = tool_call.function.arguments
+            parsed = json.loads(raw)
 
         elif self.config.provider == LLMProvider.ANTHROPIC:
+            # Convert OpenAI tool schema to Anthropic format
+            func_def = tool_schema["function"]
+            anthropic_tool = {
+                "name": func_def["name"],
+                "description": func_def["description"],
+                "input_schema": func_def["parameters"],
+            }
             response = await self.client.messages.create(
                 model=self.config.model,
                 max_tokens=800,
                 system=DM_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_prompt}],
+                tools=[anthropic_tool],
+                tool_choice={"type": "tool", "name": "dm_directive"},
                 temperature=0.7,
             )
-            raw = response.content[0].text
+            # Find the tool_use content block
+            parsed = None
+            for block in response.content:
+                if block.type == "tool_use" and block.name == "dm_directive":
+                    parsed = block.input
+                    break
+            if parsed is None:
+                raise ValueError("Anthropic response did not contain a dm_directive tool_use block")
 
         else:
             raise ValueError(f"Unsupported provider: {self.config.provider}")
 
-        # Parse JSON (handle possible markdown wrapping)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-            raw = raw.rsplit("```", 1)[0]
-        parsed = json.loads(raw)
+        # Normalise optional string fields: empty string -> None
+        def _str_or_none(val: object) -> object:
+            if isinstance(val, str) and val.strip() == "":
+                return None
+            return val
 
         return DMDirective(
             system_narration=parsed.get("system_narration", proposals.action_narration)[:120],
@@ -341,10 +455,10 @@ class DMAgent:
             turn_mood=parsed.get("turn_mood", "neutral"),
             allow_clue_discovery=parsed.get("allow_clue_discovery", True),
             npc_visibility=parsed.get("npc_visibility", {}),
-            force_npc_reaction=parsed.get("force_npc_reaction"),
-            hint_text=parsed.get("hint_text"),
-            inject_twist=parsed.get("inject_twist"),
-            atmosphere_override=parsed.get("atmosphere_override"),
+            force_npc_reaction=_str_or_none(parsed.get("force_npc_reaction")),
+            hint_text=_str_or_none(parsed.get("hint_text")),
+            inject_twist=_str_or_none(parsed.get("inject_twist")),
+            atmosphere_override=_str_or_none(parsed.get("atmosphere_override")),
             dm_reasoning=parsed.get("dm_reasoning", ""),
         )
 
@@ -418,7 +532,7 @@ class DMAgent:
             f"- \u4e8b\u4ef6\u51b7\u5374\uff1a{proposals.event_cooldowns}\n"
             f"- \u6700\u8fd1\u9ad8\u5f3a\u5ea6\u56de\u5408\uff1a{proposals.recent_high_intensity_turns}\n"
             f"\n"
-            f"\u8bf7\u7efc\u5408\u4ee5\u4e0a\u6240\u6709\u63d0\u8bae\uff0c\u505a\u51fa\u6700\u7ec8\u51b3\u7b56\u3002\u4ee5JSON\u683c\u5f0f\u56de\u590d\u3002"
+            f"\u8bf7\u7efc\u5408\u4ee5\u4e0a\u6240\u6709\u63d0\u8bae\uff0c\u505a\u51fa\u6700\u7ec8\u51b3\u7b56\u3002\u8c03\u7528 dm_directive \u5de5\u5177\u8fd4\u56de\u4f60\u7684\u51b3\u5b9a\u3002"
         )
 
     # ------------------------------------------------------------------

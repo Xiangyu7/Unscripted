@@ -16,19 +16,22 @@ def _build_character_system_prompt(
     rm = "\n".join(f"- {k}: {v}" for k, v in character.relation_map.items())
     hb = "\n".join(f"- {b}" for b in hard_boundaries) or "- 避免主动泄露未公开的核心秘密"
 
-    # Load rich character persona from .md skill file
-    from characters import load_character_skill
-    skill_content = load_character_skill(character.id)
+    # Load dynamically filtered persona from .md skill file
+    from characters import build_dynamic_persona
+    skill_content, bracket_description = build_dynamic_persona(
+        character.id, state.tension, character.trust_to_player
+    )
     depth = _CHARACTER_DEPTH.get(character.id, "")
 
-    # If we have a full skill sheet, use it as the primary persona
+    # If we have a skill sheet, inject only the relevant sections
     persona_block = ""
     if skill_content:
         persona_block = f"\n{skill_content}\n"
 
-    return f"""你现在扮演"{character.name}"——你不是AI，你就是这个人。你有自己的想法、情绪和秘密。
-{persona_block}
+    tension_line = f"\n【当前张力区间】tension={state.tension}，你现在处于{bracket_description}状态\n"
 
+    return f"""你现在扮演"{character.name}"——你不是AI，你就是这个人。你有自己的想法、情绪和秘密。
+{persona_block}{tension_line}
 【你是谁】
 {character.name}，{character.public_role}。{depth}
 
