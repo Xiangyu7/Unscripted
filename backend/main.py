@@ -354,7 +354,13 @@ async def process_turn_stream(req: TurnRequest):
     if not req.player_action.strip():
         raise HTTPException(status_code=400, detail="player_action cannot be empty.")
 
+    # Padding to force reverse proxies (Render, Cloudflare) to flush SSE immediately.
+    # Without this, proxies buffer ~4KB before sending the first byte.
+    _SSE_PADDING = f": {' ' * 2048}\n\n"
+
     async def event_stream():
+        # Initial padding to bust proxy buffers
+        yield _SSE_PADDING
         try:
             async for event in engine.process_turn_streaming(
                 req.session_id, req.player_action
@@ -367,7 +373,12 @@ async def process_turn_stream(req: TurnRequest):
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Content-Encoding": "identity",
+        },
     )
 
 
