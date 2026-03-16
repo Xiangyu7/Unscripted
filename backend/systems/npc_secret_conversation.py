@@ -210,9 +210,6 @@ class SecretConversationSystem:
                 api_key=config.api_key,
                 base_url=config.base_url,
             )
-        elif config.provider == LLMProvider.ANTHROPIC:
-            import anthropic
-            self._llm_client = anthropic.AsyncAnthropic(api_key=config.anthropic_key)
 
         self._llm_config = config
 
@@ -458,16 +455,6 @@ class SecretConversationSystem:
                 max_tokens=600,
             )
             return response.choices[0].message.content
-
-        elif config.provider == LLMProvider.ANTHROPIC:
-            response = await self._llm_client.messages.create(
-                model=config.model,
-                max_tokens=600,
-                system=DYNAMIC_CONV_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_prompt}],
-                temperature=0.8,
-            )
-            return response.content[0].text
 
         else:
             raise ValueError(f"Unsupported provider for dynamic conversation: {config.provider}")

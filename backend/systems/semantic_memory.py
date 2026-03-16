@@ -81,7 +81,7 @@ class SemanticMemory:
         self._enabled = False
 
         # Only initialise the embedding client for OpenAI-compatible providers.
-        # Anthropic and fallback providers do not expose an embedding endpoint.
+        # Fallback provider does not expose an embedding endpoint.
         if config.provider != LLMProvider.FALLBACK and config.api_key:
             try:
                 from openai import AsyncOpenAI

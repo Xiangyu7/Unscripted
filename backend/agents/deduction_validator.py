@@ -135,10 +135,6 @@ class DeductionValidator:
                 api_key=config.api_key,
                 base_url=config.base_url,
             )
-        elif config.provider == LLMProvider.ANTHROPIC:
-            import anthropic
-
-            self.client = anthropic.AsyncAnthropic(api_key=config.anthropic_key)
 
     async def validate(
         self,
@@ -260,16 +256,6 @@ class DeductionValidator:
                 max_tokens=200,
             )
             raw = response.choices[0].message.content
-
-        elif self.config.provider == LLMProvider.ANTHROPIC:
-            response = await self.client.messages.create(
-                model=self.config.model,
-                max_tokens=200,
-                system=LLM_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_prompt}],
-                temperature=0.1,
-            )
-            raw = response.content[0].text
 
         # Parse JSON from response (handle possible markdown wrapping)
         raw = raw.strip()

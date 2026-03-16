@@ -295,9 +295,6 @@ class CharacterAgent:
                 api_key=config.api_key,
                 base_url=config.base_url,
             )
-        elif config.provider == LLMProvider.ANTHROPIC:
-            import anthropic
-            self.client = anthropic.AsyncAnthropic(api_key=config.anthropic_key)
 
     def _get_thread(self, session_id: str, char_id: str) -> List[dict]:
         """Get or create the conversation thread for a character."""
@@ -363,15 +360,6 @@ class CharacterAgent:
                 )
                 reply = response.choices[0].message.content.strip()
 
-            elif self.config.provider == LLMProvider.ANTHROPIC:
-                response = await self.client.messages.create(
-                    model=self.config.model,
-                    max_tokens=300,
-                    system=system_prompt,
-                    messages=thread,
-                    temperature=0.9,
-                )
-                reply = response.content[0].text.strip()
             else:
                 return _get_fallback_response(character, intent, rule_result)
 

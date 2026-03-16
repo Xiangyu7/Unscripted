@@ -250,13 +250,6 @@ _ACTION_CONSEQUENCE_TOOL_OPENAI = {
     },
 }
 
-# Anthropic tool schema (used with Anthropic's tool_use format)
-_ACTION_CONSEQUENCE_TOOL_ANTHROPIC = {
-    "name": "action_consequence",
-    "description": "模拟玩家行为在游戏世界中产生的后果。返回行为理解、可行性判断、后果模拟、线索发现和中文叙述。",
-    "input_schema": _ACTION_CONSEQUENCE_TOOL_OPENAI["function"]["parameters"],
-}
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Fallback: enhanced free-form action patterns
@@ -844,9 +837,6 @@ class OpenActionEngine:
                 api_key=config.api_key,
                 base_url=config.base_url,
             )
-        elif config.provider == LLMProvider.ANTHROPIC:
-            import anthropic
-            self.client = anthropic.AsyncAnthropic(api_key=config.anthropic_key)
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -931,28 +921,6 @@ class OpenActionEngine:
             # Fall back to parsing message.content if tool_calls missing
             if data is None:
                 raw = msg.content or ""
-
-        elif self.config.provider == LLMProvider.ANTHROPIC:
-            response = await self.client.messages.create(
-                model=self.config.model,
-                max_tokens=800,
-                system=_WORLD_SIMULATOR_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_prompt}],
-                tools=[_ACTION_CONSEQUENCE_TOOL_ANTHROPIC],
-                tool_choice={"type": "tool", "name": "action_consequence"},
-                temperature=0.7,
-            )
-            # Anthropic returns tool_use blocks in content
-            for block in response.content:
-                if block.type == "tool_use" and block.name == "action_consequence":
-                    data = block.input
-                    break
-            # Fall back to text block if no tool_use found
-            if data is None:
-                for block in response.content:
-                    if block.type == "text":
-                        raw = block.text or ""
-                        break
 
         # If we got structured data from tool_calls, build result directly
         if data is not None:

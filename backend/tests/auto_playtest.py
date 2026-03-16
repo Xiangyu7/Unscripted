@@ -104,17 +104,11 @@ class PlaytestDetective:
         self._init_client()
 
     def _init_client(self):
-        if self.config.provider == LLMProvider.ANTHROPIC:
-            import anthropic
-            self._anthropic = anthropic.AsyncAnthropic(api_key=self.config.anthropic_key)
-            self._openai = None
-        else:
-            from openai import AsyncOpenAI
-            self._openai = AsyncOpenAI(
-                api_key=self.config.api_key,
-                base_url=self.config.base_url,
-            )
-            self._anthropic = None
+        from openai import AsyncOpenAI
+        self._openai = AsyncOpenAI(
+            api_key=self.config.api_key,
+            base_url=self.config.base_url,
+        )
 
     async def decide_action(self, game_state: dict, round_num: int, max_rounds: int) -> str:
         """Ask LLM what action to take as the detective."""
@@ -252,22 +246,13 @@ class PlaytestDetective:
         return action
 
     async def _call_llm(self, prompt: str) -> str:
-        if self._anthropic:
-            resp = await self._anthropic.messages.create(
-                model=self.config.model,
-                max_tokens=100,
-                temperature=0.8,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return resp.content[0].text
-        else:
-            resp = await self._openai.chat.completions.create(
-                model=self.config.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.8,
-                max_tokens=100,
-            )
-            return resp.choices[0].message.content.strip()
+        resp = await self._openai.chat.completions.create(
+            model=self.config.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.8,
+            max_tokens=100,
+        )
+        return resp.choices[0].message.content.strip()
 
     def record_turn_result(self, action: str, result: TurnResponse):
         """Record what happened this turn so the detective has context next turn."""
@@ -794,7 +779,7 @@ async def run_playtest(strategy: str = "thorough", max_rounds: int = 20):
     config = Config()
     if config.provider == LLMProvider.FALLBACK:
         print(f"{C.RED}ERROR: Playtest requires an LLM provider.{C.RESET}")
-        print("Set LLM_API_KEY (+ LLM_BASE_URL, LLM_MODEL) or ANTHROPIC_API_KEY.")
+        print("Set LLM_API_KEY (+ LLM_BASE_URL, LLM_MODEL).")
         sys.exit(1)
 
     engine = TurnEngine(config)

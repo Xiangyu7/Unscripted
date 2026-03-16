@@ -209,7 +209,7 @@ class DMAgent:
     authoritative, coherent instruction set for the turn.
 
     The agent supports two paths:
-    * **LLM path** (OpenAI-compatible or Anthropic) -- sends the full
+    * **LLM path** (OpenAI-compatible) -- sends the full
       proposal context to an LLM and uses function calling (tool_use)
       to obtain a structured ``DMDirective`` response.
     * **Fallback path** -- applies deterministic, rule-based logic when
@@ -229,9 +229,6 @@ class DMAgent:
                 api_key=config.api_key,
                 base_url=config.base_url,
             )
-        elif config.provider == LLMProvider.ANTHROPIC:
-            import anthropic
-            self.client = anthropic.AsyncAnthropic(api_key=config.anthropic_key)
 
         # Per-session state
         self._previous_moods: Dict[str, List[str]] = defaultdict(list)
@@ -381,11 +378,8 @@ class DMAgent:
         """Send all proposals as structured context to the LLM and parse
         the structured tool-call response into a ``DMDirective``.
 
-        OpenAI-compatible path: uses function calling (``tools`` parameter)
-        to get structured output directly, avoiding manual JSON parsing.
-
-        Anthropic path: uses ``tool_use`` content blocks (Anthropic's
-        native tool-calling format).
+        Uses function calling (``tools`` parameter) to get structured
+        output directly, avoiding manual JSON parsing.
         """
 
         user_prompt = self._build_llm_prompt(proposals, session_id)
@@ -409,32 +403,6 @@ class DMAgent:
             tool_call = response.choices[0].message.tool_calls[0]
             raw = tool_call.function.arguments
             parsed = json.loads(raw)
-
-        elif self.config.provider == LLMProvider.ANTHROPIC:
-            # Convert OpenAI tool schema to Anthropic format
-            func_def = tool_schema["function"]
-            anthropic_tool = {
-                "name": func_def["name"],
-                "description": func_def["description"],
-                "input_schema": func_def["parameters"],
-            }
-            response = await self.client.messages.create(
-                model=self.config.model,
-                max_tokens=800,
-                system=DM_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_prompt}],
-                tools=[anthropic_tool],
-                tool_choice={"type": "tool", "name": "dm_directive"},
-                temperature=0.7,
-            )
-            # Find the tool_use content block
-            parsed = None
-            for block in response.content:
-                if block.type == "tool_use" and block.name == "dm_directive":
-                    parsed = block.input
-                    break
-            if parsed is None:
-                raise ValueError("Anthropic response did not contain a dm_directive tool_use block")
 
         else:
             raise ValueError(f"Unsupported provider: {self.config.provider}")

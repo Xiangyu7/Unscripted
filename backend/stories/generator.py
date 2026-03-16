@@ -23,10 +23,6 @@ class StoryGenerator:
                 api_key=config.api_key,
                 base_url=config.base_url,
             )
-        elif config.provider == LLMProvider.ANTHROPIC:
-            import anthropic
-
-            self.client = anthropic.AsyncAnthropic(api_key=config.anthropic_key)
 
     # ------------------------------------------------------------------
     # Public API
@@ -141,16 +137,6 @@ class StoryGenerator:
                 response_format={"type": "json_object"},
             )
             return resp.choices[0].message.content or "{}"
-
-        elif self.config.provider == LLMProvider.ANTHROPIC:
-            resp = await self.client.messages.create(
-                model=self.config.model,
-                max_tokens=4096,
-                messages=[{"role": "user", "content": prompt}],
-                system="你是一个专业的推理游戏编剧。你只输出JSON，不输出任何其他内容。",
-                temperature=0.9,
-            )
-            return resp.content[0].text if resp.content else "{}"
 
         raise RuntimeError(f"Unsupported provider: {self.config.provider}")
 

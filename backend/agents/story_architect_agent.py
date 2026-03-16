@@ -268,13 +268,6 @@ _ARCHITECT_DIRECTIVE_TOOL_OPENAI = {
     },
 }
 
-# Anthropic tool schema (used with Anthropic's tool_use format)
-_ARCHITECT_DIRECTIVE_TOOL_ANTHROPIC = {
-    "name": "architect_directive",
-    "description": "生成本轮的叙事指令，管理故事的戏剧结构和节奏。",
-    "input_schema": _ARCHITECT_DIRECTIVE_TOOL_OPENAI["function"]["parameters"],
-}
-
 
 # ---------------------------------------------------------------------------
 # StoryArchitectAgent
@@ -288,7 +281,7 @@ class StoryArchitectAgent:
     adaptive pacing that responds to player progress, tension levels, and
     stuck states.
 
-    The agent can use LLM (OpenAI-compatible or Anthropic) for rich directive
+    The agent can use LLM (OpenAI-compatible) for rich directive
     generation, or fall back to rule-based logic with pre-written pools.
     """
 
@@ -302,9 +295,6 @@ class StoryArchitectAgent:
                 api_key=config.api_key,
                 base_url=config.base_url,
             )
-        elif config.provider == LLMProvider.ANTHROPIC:
-            import anthropic
-            self.client = anthropic.AsyncAnthropic(api_key=config.anthropic_key)
 
     # ------------------------------------------------------------------
     # Public API
@@ -373,27 +363,6 @@ class StoryArchitectAgent:
             if parsed is None:
                 raw = msg.content or ""
 
-        elif self.config.provider == LLMProvider.ANTHROPIC:
-            response = await self.client.messages.create(
-                model=self.config.model,
-                max_tokens=600,
-                system=ARCHITECT_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_prompt}],
-                tools=[_ARCHITECT_DIRECTIVE_TOOL_ANTHROPIC],
-                tool_choice={"type": "tool", "name": "architect_directive"},
-                temperature=0.7,
-            )
-            # Anthropic returns tool_use blocks in content
-            for block in response.content:
-                if block.type == "tool_use" and block.name == "architect_directive":
-                    parsed = block.input
-                    break
-            # Fall back to text block if no tool_use found
-            if parsed is None:
-                for block in response.content:
-                    if block.type == "text":
-                        raw = block.text or ""
-                        break
         else:
             raise ValueError(f"Unsupported provider: {self.config.provider}")
 
