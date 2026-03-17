@@ -105,13 +105,37 @@ def _build_character_user_prompt(
     player_action: str, rule_result: dict
 ) -> str:
     """Build the user message for the character agent."""
-    return f"""【侦探刚才做了什么】
+    narration = rule_result.get('narration', '')
+    success = rule_result.get('success_level', 'partial')
+    category = rule_result.get('action_category', 'other')
+
+    # Build richer context for the NPC
+    situation_hints = []
+    if category in ('ask', 'social', 'communicate'):
+        situation_hints.append("侦探在向你提问——你需要决定说多少真话")
+    elif category in ('accuse', 'confront'):
+        situation_hints.append("侦探在指控或施压——你要保护自己")
+    elif category in ('bluff', 'manipulate'):
+        situation_hints.append("侦探可能在套你的话——小心应对")
+    elif category in ('search', 'investigate'):
+        situation_hints.append("侦探在搜查——如果他找到了什么，你要准备解释")
+    elif category == 'observe':
+        situation_hints.append("侦探在观察你——你的表情和动作会暴露信息")
+
+    hints_text = "\n".join(f"- {h}" for h in situation_hints)
+
+    return f"""【侦探刚才的行动】
 {player_action}
 
-【规则判断结果】
-{rule_result.get('narration', '')}
+【场景描述】
+{narration}
 
-请以你的角色身份回应。"""
+【你需要考虑】
+{hints_text}
+- 根据你的秘密和立场，决定是回避、反击、撒谎还是透露一部分信息
+- 回应要针对侦探的具体问题，不要说空话套话
+
+用30-100字回应，只输出对话和动作。"""
 
 
 # ─── Fallback response pools ─────────────────────────────────────────
@@ -355,8 +379,8 @@ class CharacterAgent:
                 response = await self.client.chat.completions.create(
                     model=self.config.model,
                     messages=messages,
-                    temperature=0.9,
-                    max_tokens=300,
+                    temperature=0.75,
+                    max_tokens=200,
                 )
                 reply = response.choices[0].message.content.strip()
 

@@ -2511,6 +2511,8 @@ class TurnEngine:
                     character=char, state=state, player_action=player_action,
                     intent=intent_enum,
                     rule_result={"success": action_result.success_level,
+                                 "success_level": action_result.success_level,
+                                 "action_category": action_result.action_category,
                                  "narration": action_result.narration,
                                  "discovered_clues": action_result.discovered_clues},
                     extra_context=extra,
