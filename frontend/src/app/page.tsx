@@ -260,7 +260,8 @@ export default function HomePage() {
   // Memoize characters with mood-aware portrait URLs
   const charactersWithPortraits = useMemo(
     () => (gameState?.characters || []).map(c => {
-      const mood = c.mood || "calm";
+      const validMoods = ["calm", "guarded", "nervous", "fearful", "angry", "desperate"];
+      const mood = validMoods.includes(c.mood || "") ? c.mood! : "calm";
       // 1. Static pre-generated portrait (fastest, no API call)
       const staticUrl = `${portraitBase}/${c.id}_${mood}.png`;
       // 2. API-fetched mood portrait
