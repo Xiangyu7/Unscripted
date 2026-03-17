@@ -1473,7 +1473,7 @@ class TurnEngine:
                 self.story_architect.config.provider = original_arch_provider
 
         # ── 7. Character Agents + Image Agent (parallel) ──
-        current_scene = state.scene
+        current_scene_short = _get_current_scene_short(state.scene, state.available_scenes)
         relevant_characters = []
         should_generate_replies = self._should_generate_character_replies(
             action_result, target_char_id, is_complex
@@ -1481,7 +1481,7 @@ class TurnEngine:
         if should_generate_replies:
             for char in state.characters:
                 is_targeted = char.id == target_char_id
-                is_present = char.location == current_scene
+                is_present = char.location == current_scene_short
                 is_accuse = legacy_intent == "accuse"
                 if is_targeted or (is_present and action_result.action_category != "move") or is_accuse:
                     relevant_characters.append(char)
@@ -2443,7 +2443,7 @@ class TurnEngine:
             # Phase 3: Character agents via as_completed (~3-6s)
             # ══════════════════════════════════════════════════════════
 
-            current_scene = state.scene
+            current_scene_short = _get_current_scene_short(state.scene, state.available_scenes)
             relevant_characters = []
             should_generate_replies = self._should_generate_character_replies(
                 action_result, target_char_id, is_complex
@@ -2451,7 +2451,7 @@ class TurnEngine:
             if should_generate_replies:
                 for char in state.characters:
                     is_targeted = char.id == target_char_id
-                    is_present = char.location == current_scene
+                    is_present = char.location == current_scene_short
                     is_accuse = legacy_intent == "accuse"
                     if is_targeted or (is_present and action_result.action_category != "move") or is_accuse:
                         relevant_characters.append(char)
