@@ -235,6 +235,7 @@ export default function HomePage() {
   const [sidebarTab, setSidebarTab] = useState<"characters" | "info">("characters");
   const inputRef = useRef<HTMLInputElement>(null);
   const recorderRef = useRef<BrowserWavRecorder | null>(null);
+  const speechQueueRef = useRef<Promise<void>>(Promise.resolve());
   const audioPlaybackRef = useRef<HTMLAudioElement | null>(null);
   const ambientRef = useRef<AmbientAudioManager | null>(null);
   const initializedRef = useRef(false);
@@ -575,15 +576,24 @@ export default function HomePage() {
                     text: event.text,
                     character: event.character,
                   }]);
-                  // Speak this character's line immediately
+                  // Queue speech — play one after another, not all at once
                   if (voicePlaybackEnabled && voiceStatus?.tts.available && event.voice) {
-                    synthesizeSpeech(event.text, event.voice, event.speed).then((speech) => {
-                      const audio = new Audio();
-                      // Set handlers BEFORE assigning src to avoid race condition
-                      audio.oncanplaythrough = () => audio.play().catch(() => {});
-                      audio.onerror = () => { audio.src = ""; };
-                      audio.src = `data:${speech.mime_type};base64,${speech.audio_base64}`;
-                    }).catch(() => {});
+                    const voice = event.voice;
+                    const speed = event.speed;
+                    const text = event.text;
+                    speechQueueRef.current = speechQueueRef.current.then(() =>
+                      synthesizeSpeech(text, voice, speed).then((speech) =>
+                        new Promise<void>((resolve) => {
+                          const audio = new Audio();
+                          audio.onended = () => resolve();
+                          audio.onerror = () => { audio.src = ""; resolve(); };
+                          audio.oncanplaythrough = () => audio.play().catch(() => resolve());
+                          audio.src = `data:${speech.mime_type};base64,${speech.audio_base64}`;
+                          // Timeout fallback in case audio never fires events
+                          setTimeout(resolve, 30000);
+                        })
+                      ).catch(() => {})
+                    );
                   }
                 }
                 break;
