@@ -110,12 +110,12 @@ CLUE_FACT_MAP = {
 # Each character gets a maximally distinct GLM-TTS voice.
 # Narrator uses a deep, cinematic voice.
 CHARACTER_VOICES = {
-    "linlan":   "xiaochen",  # 林岚: 小陈 — 成熟冷静的女声，适合秘书
-    "zhoumu":   "chuichui",  # 周牧: 锤锤 — 成人男声，略带紧张
-    "songzhi":  "tongtong",  # 宋知微: 彤彤 — 清晰干练的女声，适合记者
-    "narrator": "xiaochen",  # 旁白: 小陈 — 用慢速+低语速营造解说感
+    "linlan":   "tongtong",  # 林岚: 彤彤 — 成熟女声，适合冷静秘书
+    "zhoumu":   "xiaochen",  # 周牧: 小陈 — 成人男声，略带紧张
+    "songzhi":  "chuichui",  # 宋知微: 锤锤 — 另一种声线，区分两位女性角色
+    "narrator": "xiaochen",  # 旁白: 小陈 — 男声解说
 }
-# NOTE: GLM TTS 只有 3 个成人音色 (tongtong/chuichui/xiaochen)
+# NOTE: GLM TTS 成人音色: tongtong(女), xiaochen(男), chuichui(中性偏年轻)
 # jam/kazi/douji/luodo 是"动物圈"卡通音色，不适合成人角色
 
 
